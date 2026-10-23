@@ -76,6 +76,21 @@ Without a flag, the script resolves the app from `.host0/state.json` in the publ
 
 Add `--message "what changed"` (up to 200 characters) to give the new version a note — e.g. `--message "Added a due date column"`. Do it whenever you publish a change the user asked for; it's what they'll see in the version list.
 
+**"Publish my changes to host0 app {slug}"** (the line the dashboard's Versions tab gives people to paste): publish the folder or file you've been changing with `--slug {slug}` — the next version of that app, never a new one. If this chat doesn't have the app's files, pull them first (below).
+
+**Updating an app you don't have here** (a new chat, another machine or agent, "change my app k3x9q2m7ta"): pull its live files first, edit them, publish the folder back.
+
+```bash
+./scripts/publish.sh --pull --slug {slug}            # → ./{slug}/ (or pass a folder: --pull --slug {slug} ./work)
+# edit the files in ./{slug}/
+./scripts/publish.sh ./{slug} --message "Added a dark mode toggle"
+```
+
+- `--pull` downloads every file of the live version (`h0.json` included, so shared data keeps its collections) into a new or empty folder — it refuses a folder with files in it, so nothing local is overwritten — and records the app in `{folder}/.host0/state.json`, so publishing that folder updates the same app (same URL, access and data) as its next version. Stderr ends with `pull_result.dir`, `.slug`, `.url`, `.version`, `.files`.
+- Only the owner's key can pull. The user can't find the slug? It's in their dashboard URL and on the app's Versions tab, which also has a ready-made prompt for this.
+- Without the script: `GET {base}/api/v1/apps/{app_id_or_slug}/files` lists `files[]` with `path`, `size`, `sha256` and `download_url`. Send the bearer key only to a `download_url` on `{base}`; any other is a signed URL, valid for an hour, that needs no header.
+- Pulled files are what's live, which may be built output (a `dist/` bundle). If the user has the source somewhere, edit that and rebuild instead; edit the bundle only for small changes.
+
 ## Versions and rollback
 
 Every publish that goes live is a numbered version of the app (`v1`, `v2`, …) — `publish_result.version` is this one, `publish_result.previous_version` the one it replaced. Earlier versions are kept for a number of days that depends on the plan — `GET {base}/api/v1` (with the key) → `limits.account.version_retention_days` (0 = only the live version); older ones are deleted automatically.
@@ -486,6 +501,7 @@ Never retry the same publish in a loop — it fails the same way until something
 | `--name {text}` | App name when creating (default: directory basename, or the file name without its extension) |
 | `--slug {slug}` | Update the existing app with this slug |
 | `--app-id {uuid}` | Update the existing app with this id |
+| `--pull` | Download the live files of `--slug`/`--app-id` into `[dir]` (default `./{slug}`; new or empty) to edit and publish back |
 | `--visibility {mode}` | Set `private`, `link` (anyone with the URL, never indexed), or `public` (public on the web, indexable) after publish |
 | `--message {text}` | A note for this version — what changed (up to 200 characters; longer fails with `bad_request` before anything uploads) |
 | `--client {name}` | Agent name for attribution, e.g. `claude-ai`, `chatgpt` (sends `x-host0-client: {name}/{script version}`; default `$HOST0_CLIENT`, else detected for Claude Code, Codex, Cursor, Gemini CLI…) — pass it when the script can't detect you |

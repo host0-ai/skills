@@ -41,6 +41,8 @@ CLEANUP_DONE=0
 usage() {
   cat <<'USAGE'
 Usage: publish.sh <dir|file> [options]
+       publish.sh --pull --slug <slug> [dir]
+                                   Download an app's live files to edit them
        publish.sh --login          Start (or re-show) a device login
        publish.sh --login-wait     Wait for the user to approve it
 
@@ -63,6 +65,9 @@ Options:
                           indexed) | public (public on the web, indexable)
   --message <text>        A note for this version, e.g. "New pricing table"
                           (≤ 200 characters; shown in the version list)
+  --pull                  Download the live version of --slug/--app-id into
+                          [dir] (default: ./<slug>; must be empty or new), set
+                          up so publishing that folder updates the same app
   --client <name>         Agent name for attribution (e.g. claude-code, claude-ai,
                           cursor). Default: $HOST0_CLIENT, else detected from
                           the environment, else "unknown"
@@ -196,6 +201,7 @@ while [[ $# -gt 0 ]]; do
     --allow-nonhost0-base-url) ALLOW_NONHOST0_BASE_URL=1; shift ;;
     --login)      MODE="login"; shift ;;
     --login-wait) MODE="login-wait"; shift ;;
+    --pull)       MODE="pull"; shift ;;
     --wait)       LOGIN_WAIT_SECONDS="$2"; shift 2 ;;
     --no-login)   NO_LOGIN=1; shift ;;
     --help|-h)    usage ;;
@@ -278,7 +284,7 @@ fi
 # safety guard: never send the api key — or run a sign-in — against an
 # arbitrary endpoint. this must run before any network request.
 if [[ "$BASE_URL" != "$DEFAULT_BASE_URL" && "$ALLOW_NONHOST0_BASE_URL" -ne 1 ]]; then
-  if [[ "$MODE" == "publish" && -n "$API_KEY" ]]; then
+  if [[ ( "$MODE" == "publish" || "$MODE" == "pull" ) && -n "$API_KEY" ]]; then
     die "refusing to send API key to non-default base URL; pass --allow-nonhost0-base-url to override"
   fi
   die "refusing to sign in against a non-default base URL; pass --allow-nonhost0-base-url to override"
@@ -513,7 +519,7 @@ case "$MODE" in
     device_wait
     exit 0
     ;;
-  publish)
+  publish|pull)
     if [[ -z "$API_KEY" ]]; then
       if [[ "$NO_LOGIN" -eq 1 ]]; then
         die "no API key found (--no-login). Run publish.sh --login to sign in — the user approves a link + code in their browser, nothing personal is typed here — or pass --api-key / set HOST0_API_KEY."
@@ -534,7 +540,9 @@ esac
 # single-file mode keeps its state next to the file, keyed by the file name
 # (STATE_SOURCE), so two files published from one folder stay two apps. a
 # directory's entries carry source "." (legacy entries have none = ".").
-if [[ "$TARGET_KIND" == "dir" ]]; then
+if [[ "$MODE" == "pull" ]]; then
+  STATE_DIR=""  # pull writes its own state file (below)
+elif [[ "$TARGET_KIND" == "dir" ]]; then
   TARGET_ABS=$(cd "$TARGET" && pwd)
   STATE_DIR="$TARGET_ABS/.host0"
   STATE_SOURCE="."
@@ -597,6 +605,78 @@ compute_sha256() {
     sha256sum "$f" | cut -d' ' -f1
   fi
 }
+
+# ── pull: the live version of an app into a folder ──
+# for updating an app from a new chat (no local copy): download every live
+# file, record the app in <dir>/.host0/state.json, and the next publish of
+# <dir> becomes the app's next version. h0.json comes along, so shared data
+# keeps its collections.
+if [[ "$MODE" == "pull" ]]; then
+  APP_REF="${SLUG:-$APP_ID}"
+  [[ -n "$APP_REF" ]] || die "--pull needs --slug <slug> (or --app-id <uuid>) — the app to download"
+  echo "Listing the live files of $APP_REF..." >&2
+  FILES_RESP=$(api GET "/api/v1/apps/$APP_REF/files")
+  check_api_error "$FILES_RESP" "list files"
+  APP_ID=$(echo "$FILES_RESP" | jq -r '.app_id')
+  APP_SLUG=$(echo "$FILES_RESP" | jq -r '.slug')
+  LIVE_URL=$(echo "$FILES_RESP" | jq -r '.url')
+  LIVE_VERSION=$(echo "$FILES_RESP" | jq -r '.version // empty')
+  DEST="${TARGET:-$APP_SLUG}"
+  if [[ -e "$DEST" && ! -d "$DEST" ]]; then
+    die "$DEST is a file — pass an empty or new folder to pull into"
+  fi
+  if [[ -d "$DEST" ]] && [[ -n "$(ls -A "$DEST" | grep -v '^\.host0$' || true)" ]]; then
+    die "$DEST isn't empty — pull into a new folder (e.g. publish.sh --pull --slug $APP_SLUG ./$APP_SLUG-live) so nothing local is overwritten"
+  fi
+  mkdir -p "$DEST"
+  DEST_ABS=$(cd "$DEST" && pwd)
+  COUNT=0
+  while IFS=$'\t' read -r fpath furl fsha; do
+    [[ -n "$fpath" ]] || continue
+    # paths come from our own manifest validation, but never write outside DEST
+    case "/$fpath/" in
+      */../*|*/./*|//*) die "refusing an unsafe path from the api: $fpath" ;;
+    esac
+    mkdir -p "$DEST_ABS/$(dirname "$fpath")"
+    # the bearer key goes to the api base url only — signed data-plane urls
+    # carry their own authorization.
+    if [[ "$furl" == "$BASE_URL/"* ]]; then
+      net_curl idem -sS -f -o "$DEST_ABS/$fpath" "$furl" \
+        -H "authorization: Bearer $API_KEY" \
+        -H "x-host0-client: $CLIENT_HEADER_VALUE" >/dev/null || die "could not download $fpath"
+    else
+      net_curl idem -sS -f -o "$DEST_ABS/$fpath" "$furl" >/dev/null || die "could not download $fpath"
+    fi
+    if [[ -n "$fsha" && "$fsha" != "null" ]]; then
+      got=$(compute_sha256 "$DEST_ABS/$fpath")
+      [[ "$got" == "$fsha" ]] || die "$fpath downloaded with the wrong hash ($got, expected $fsha) — run --pull again"
+    fi
+    COUNT=$((COUNT + 1))
+  done < <(echo "$FILES_RESP" | jq -r '.files[] | [.path, .download_url, (.sha256 // "")] | @tsv')
+
+  # the same state entry a publish of DEST writes, so the next publish of the
+  # folder updates this app instead of creating one.
+  mkdir -p "$DEST_ABS/.host0"
+  PULL_STATE_FILE="$DEST_ABS/.host0/state.json"
+  if [[ -f "$PULL_STATE_FILE" ]]; then STATE=$(cat "$PULL_STATE_FILE"); else STATE='{"apps":{}}'; fi
+  entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
+    --arg b "$BASE_URL" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{app_id: $a, slug: $s, url: $u, base_url: $b, source: ".", updated_at: $t}')
+  STATE=$(echo "$STATE" | jq --arg k "$APP_SLUG" --arg a "$APP_ID" --argjson e "$entry" \
+    '.apps = ((.apps // {}) | with_entries(select(.value.app_id != $a))) | .apps[$k] = $e')
+  echo "$STATE" | jq '.' > "$PULL_STATE_FILE"
+
+  # stdout: the folder, nothing else
+  echo "$DEST_ABS"
+  echo "" >&2
+  echo "pull_result.dir=$DEST_ABS" >&2
+  echo "pull_result.app_id=$APP_ID" >&2
+  echo "pull_result.slug=$APP_SLUG" >&2
+  echo "pull_result.url=$LIVE_URL" >&2
+  echo "pull_result.version=$LIVE_VERSION" >&2
+  echo "pull_result.files=$COUNT" >&2
+  exit 0
+fi
 
 # extension → content-type map (mirrors src/lib/hosting/validate.ts)
 guess_content_type() {
