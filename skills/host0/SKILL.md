@@ -35,13 +35,32 @@ It returns the current endpoint list, file caps, and the platform contract (what
 
 To install or update this skill: `npx skills add host0-ai/skills` (any agent the [skills CLI](https://skills.sh) supports; source: https://github.com/host0-ai/skills), or fetch two files: `https://host0.ai/skill.md` → save as `SKILL.md`, and `https://host0.ai/publish.sh` → save as `scripts/publish.sh` next to it, then `chmod +x scripts/publish.sh`. The script's URL is `/publish.sh` — there's no `/scripts/` in it.
 
+## Which tool: the host0 CLI or publish.sh
+
+Two tools do the same job. Decide once, at the start:
+
+1. Run `node -v`. If it prints v18.18 or newer and `npx` exists, use the **host0 CLI**: `npx -y @host0/cli@latest <command>` (written `host0 <command>` below). Nothing to install.
+2. Otherwise — no Node, an older one, or the first `npx` call can't fetch the package from the npm registry (some sandboxes block it) — use **`./scripts/publish.sh`**, exactly as this skill describes. Don't retry npm; switch straight away. claude.ai sandboxes usually have Node; if `npx` fails there, fall back to `publish.sh` at once.
+
+Both read and write the same `~/.host0/credentials`, `~/.host0/device.json` and `.host0/state.json`, and print the same stdout URL and `publish_result.*` / `pull_result.*` / `login_result.*` lines with the same exit codes (`0` ok · `1` error · `3` waiting for the user's approval). So every rule below keyed on those lines holds for both, and a folder published with one updates with the other. The examples use `publish.sh`; translate them with:
+
+| publish.sh | host0 CLI |
+| --- | --- |
+| `publish.sh {dir\|file} [flags]` | `host0 deploy {dir\|file} [same flags]` |
+| `publish.sh --login` | `host0 login` |
+| `publish.sh --login-wait` | `host0 login --wait` |
+| `--wait {seconds}` | `--timeout {seconds}` |
+| `publish.sh --pull --slug {slug} [dir]` | `host0 pull {slug} [dir]` |
+
+The CLI also manages apps, so you don't need raw curl for these: `host0 ls`, `inspect {app}`, `versions {app}`, `rollback {app} {n}`, `visibility {app} private|link|public`, `rename {app} [--slug s] [--name n]`, `share {app} {email…}` / `unshare {app} {email}`, `rm {app} --yes`, `analytics {app} [--period 7d]`, `records {app} [collection] [--export]`, `whoami`, `logout`, and `api {path} [-X METHOD] [-d json]` for anything else under `/api/v1`. `{app}` is a slug or an app id; `--json` prints the API's JSON body. The curl calls below are for the `publish.sh` path.
+
 ## Requirements
 
-- Required binaries: `curl`, `jq` (the script dies with a clear message if either is missing)
-- An API key, from `$HOST0_API_KEY` or `~/.host0/credentials`. With none, `publish.sh` starts a **device login** for you — the user approves a link + code in their own browser (see "Getting an API key")
-- Bundled helper: `./scripts/publish.sh`
+- **CLI path:** Node 18.18+ with `npx`, and outbound HTTPS to the npm registry for the first run.
+- **publish.sh path:** `curl`, `jq` (the script dies with a clear message if either is missing); bundled helper `./scripts/publish.sh`.
+- An API key, from `$HOST0_API_KEY` or `~/.host0/credentials`. With none, a deploy starts a **device login** for you — the user approves a link + code in their own browser (see "Getting an API key")
 - Network: outbound HTTPS to **`host0.ai`** (the API) and **`host0.app`** (uploads and the live apps). In a sandbox with an egress allowlist, if a request fails with `SSL_ERROR_SYSCALL`, a proxy error, or a connection refused/reset every time, tell the user which domain to allow — don't loop on it.
-- Transient failures happen: some cloud sandboxes see occasional connection resets / `SSL_ERROR_SYSCALL` / connect timeouts reaching `host0.ai`. `publish.sh` retries those by itself (you'll see `host0: network hiccup … retrying 2/4` on stderr) — just let it run. If you're calling the API with raw curl, retry the request yourself; for GETs and the device-login poll you can add `--retry 3 --retry-all-errors`, never for POSTs that create something.
+- Transient failures happen: some cloud sandboxes see occasional connection resets / `SSL_ERROR_SYSCALL` / connect timeouts reaching `host0.ai`. The CLI and `publish.sh` retry those by themselves (you'll see `host0: network hiccup … retrying 2/4` on stderr) — just let them run. If you're calling the API with raw curl, retry the request yourself; for GETs and the device-login poll you can add `--retry 3 --retry-all-errors`, never for POSTs that create something.
 
 ## Publish an app
 
@@ -52,7 +71,9 @@ To install or update this skill: `npx skills add host0-ai/skills` (any agent the
 
 Prints the live URL on stdout (e.g. `https://k3x9q2m7ta.host0.app/` — new apps get a random slug; `--name` is only the display name).
 
-Add `--client {your-agent}` (e.g. `--client claude-ai`) when you're not Claude Code, Codex, Cursor or Gemini CLI — the script detects those itself. It only labels deploy stats.
+Add `--client {your-agent}` (e.g. `--client claude-ai`) when you're not Claude Code, Codex, Cursor or Gemini CLI — both tools detect those themselves. It only labels deploy stats.
+
+With the CLI: `host0 deploy {dir|file} [--name "my app"]` — same flags, same output.
 
 Under the hood this is a three-step flow: manifest → upload files → finalize. The app is not live until finalize succeeds.
 
@@ -64,7 +85,7 @@ Under the hood this is a three-step flow: manifest → upload files → finalize
 
 **Free during the beta, with a badge:** host0 is free during the beta, and every app is on the free plan, which adds a small "Hosted on host0" badge fixed to the bottom-right corner (about 28px tall, 12px from the edges) of every HTML page, so leave a little room there (no fixed button or chat bubble flush in that corner) and don't try to hide it. A PDF, image, video, audio or text file (`.txt`, `.csv`, `.md`, `.json`) opened directly in a browser tab opens in a host0 file viewer: the file fills the window, with a slim bar under it (file name, Download, "Hosted on host0") that never covers it. The raw file is still served to `<img>`/`<video>` tags, embeds, `fetch()`, curl, link previews and search engines; `?download` on any file URL downloads the original. Other files (zip, fonts, JS, CSS) are served as they are. Whether the user's plan shows the badge is `plan.badge` in `GET {base}/api/v1` (with their key). If the user asks about pricing or removing the badge: when that index has a `plans` list, it names each plan, its price and what it changes (a plan with `badge: false` removes it) — point them at `{base}/pricing`; when there's no `plans` list, host0 is free during the beta, and paid plans may come later and may let them remove it.
 
-**Analytics, built in:** host0 counts visits to every app without cookies — a tiny same-origin script (`/.h0/a.js`) is added to each HTML page, and opened PDFs are counted on the server. The owner sees visitors, pages, referrers, countries and devices in the dashboard's Analytics tab, with `GET {base}/api/v1/apps/{app_id_or_slug}/analytics?period=7d` (period: `24h`, `7d`, `30d`, `90d`, `365d`; 400 `invalid_period` otherwise; optional filters `page=/path`, `referrer=host` or `(direct)`, `country=DE` or `(unknown)`, `device`, `browser` narrow every number — 400 `invalid_filter` if malformed), or the MCP `get_analytics` tool. Don't remove the script. If the app sets a Content-Security-Policy, allow `'self'` in `script-src` and `connect-src`. When the user asks "how many people opened it?", answer from that endpoint.
+**Analytics, built in:** host0 counts visits to every app without cookies — a tiny same-origin script (`/.h0/a.js`) is added to each HTML page, and opened PDFs are counted on the server. The owner sees visitors, pages, referrers, countries and devices in the dashboard's Analytics tab, with `host0 analytics {app} --period 7d` (CLI), `GET {base}/api/v1/apps/{app_id_or_slug}/analytics?period=7d` (period: `24h`, `7d`, `30d`, `90d`, `365d`; 400 `invalid_period` otherwise; optional filters `page=/path`, `referrer=host` or `(direct)`, `country=DE` or `(unknown)`, `device`, `browser` narrow every number — 400 `invalid_filter` if malformed), or the MCP `get_analytics` tool. Don't remove the script. If the app sets a Content-Security-Policy, allow `'self'` in `script-src` and `connect-src`. When the user asks "how many people opened it?", answer from that.
 
 ## Update an app
 
@@ -87,6 +108,7 @@ Add `--message "what changed"` (up to 200 characters) to give the new version a 
 ```
 
 - `--pull` downloads every file of the live version (`h0.json` included, so shared data keeps its collections) into a new or empty folder — it refuses a folder with files in it, so nothing local is overwritten — and records the app in `{folder}/.host0/state.json`, so publishing that folder updates the same app (same URL, access and data) as its next version. Stderr ends with `pull_result.dir`, `.slug`, `.url`, `.version`, `.files`.
+- CLI: `host0 pull {slug} [dir]`, then `host0 deploy ./{slug} --message "…"`.
 - Only the owner's key can pull. The user can't find the slug? It's in their dashboard URL and on the app's Versions tab, which also has a ready-made prompt for this.
 - Without the script: `GET {base}/api/v1/apps/{app_id_or_slug}/files` lists `files[]` with `path`, `size`, `sha256` and `download_url`. Send the bearer key only to a `download_url` on `{base}`; any other is a signed URL, valid for an hour, that needs no header.
 - Pulled files are what's live, which may be built output (a `dist/` bundle). If the user has the source somewhere, edit that and rebuild instead; edit the bundle only for small changes.
@@ -95,7 +117,7 @@ Add `--message "what changed"` (up to 200 characters) to give the new version a 
 
 Every publish that goes live is a numbered version of the app (`v1`, `v2`, …) — `publish_result.version` is this one, `publish_result.previous_version` the one it replaced. Earlier versions are kept for a number of days that depends on the plan — `GET {base}/api/v1` (with the key) → `limits.account.version_retention_days` (0 = only the live version); older ones are deleted automatically.
 
-When the user wants to undo a change ("roll back", "put the old one back", "that broke it"), restore an earlier version — it goes live again for everyone as a new version within a minute, with no re-upload:
+When the user wants to undo a change ("roll back", "put the old one back", "that broke it"), restore an earlier version — it goes live again for everyone as a new version within a minute, with no re-upload. CLI: `host0 versions {app}`, then `host0 rollback {app} 3 [--message "…"]`. With curl:
 
 ```bash
 # list them, newest first (version, live, message, client, restored_from_version, created_at)
@@ -124,7 +146,7 @@ A host0 app uses one visibility at a time:
 - **`link`** — "Anyone with the link": anyone with the URL can view, no sign-in. The app is unlisted and never indexed (every response carries `X-Robots-Tag: noindex`), and its URL starts out random — but a link travels, and a renamed, readable URL can be guessed — keep anything sensitive private.
 - **`public`** — "Public on the web": anyone can view **and search engines may index it** (the app's own pages are served with `X-Robots-Tag: all`). Opt-in, and capped per account (403 `public_app_limit_reached`, with `max_public_apps` in the body). Use it only when the user wants the app found in search — a portfolio, a landing page, docs, a public tool. Never for anything sensitive.
 
-When the user wants a link anyone can open (a page to send around, a demo, a shared PDF), publish with `--visibility link` — that's what "make it public" or "share a link" almost always means. Choose `public` only when they say they want it on Google / in search results; if it's unclear, ask. Shared data works the same on `link` and `public`. Set visibility on publish with `--visibility private|link|public`, or any time via the API:
+When the user wants a link anyone can open (a page to send around, a demo, a shared PDF), publish with `--visibility link` — that's what "make it public" or "share a link" almost always means. Choose `public` only when they say they want it on Google / in search results; if it's unclear, ask. Shared data works the same on `link` and `public`. Set visibility on publish with `--visibility private|link|public`, or any time with `host0 visibility {app} link` (CLI) or the API:
 
 ```bash
 curl -sS {base}/api/v1/apps/{app_id_or_slug} -X PATCH \
@@ -137,7 +159,7 @@ If going `public` returns `public_app_limit_reached`, tell the user the account 
 
 ## Rename the URL
 
-A new app's URL is a random slug like `k3x9q2m7ta.host0.app`. To give it a readable one, check the name, then rename:
+A new app's URL is a random slug like `k3x9q2m7ta.host0.app`. To give it a readable one: `host0 rename {app} --slug team-todo` (CLI), or check the name, then rename:
 
 ```bash
 curl -sS {base}/api/v1/slugs/team-todo -H "authorization: bearer $HOST0_API_KEY"
@@ -152,11 +174,11 @@ curl -sS {base}/api/v1/apps/{app_id} -X PATCH \
 
 Slugs are 1–63 lowercase letters, digits or hyphens, with no hyphen at the start or end. A taken slug returns 409 `slug_taken`; a malformed or reserved one 422 `invalid_slug`. The live deployment, records and shares move with the app, and `publish.sh` keeps updating it (it tracks the app id). **For 30 days the old URL redirects (301) to the new one and stays reserved for the user, then it's released** — say so before renaming a link people already have. A deleted app's URL is reserved for 30 days too (it 404s). A slug another account used in the last 30 days returns 409 `slug_taken` ("was recently used by another app"). The user can also rename it on the Settings tab of the app's dashboard page.
 
-The app's display name (shown in the dashboard and `GET /api/v1/apps`) is separate from its URL — change it with `PATCH {base}/api/v1/apps/{app_id}` `{"name": "Team todo"}` (1–100 characters); the URL doesn't change.
+The app's display name (shown in the dashboard and `GET /api/v1/apps`) is separate from its URL — change it with `host0 rename {app} --name "Team todo"` or `PATCH {base}/api/v1/apps/{app_id}` `{"name": "Team todo"}` (1–100 characters); the URL doesn't change.
 
 ## Sharing
 
-Invite people by email with `POST /api/v1/apps/{app_id_or_slug}/shares` (body `{"emails": ["a@b.com"]}`); remove one with `DELETE /api/v1/apps/{app_id_or_slug}/shares/{email}`.
+Invite people by email with `host0 share {app} a@b.com` (CLI) or `POST /api/v1/apps/{app_id_or_slug}/shares` (body `{"emails": ["a@b.com"]}`); remove one with `host0 unshare {app} a@b.com` or `DELETE /api/v1/apps/{app_id_or_slug}/shares/{email}`.
 
 New shares receive individual invitation emails with sign-in and sign-up links. Check `invite_delivery` in the response: `accepted` means the email server accepted it, not guaranteed inbox delivery. `failed`, `not_sent`, `cooldown`, or `rate_limited` leave access granted; share the app's sign-in link or resend to an existing member with `{"emails":["a@b.com"],"resend":true}`. Existing shares aren't emailed again unless `resend` is true. Wait 60 seconds between emails to the same member. Invite at most 10 addresses per request; the account's default email limit is 500 attempts per hour.
 
@@ -341,6 +363,8 @@ setInterval(load, 4000);   // collaboration in v1 is polling
 
 ### Getting the data out
 
+CLI: `host0 records {app}` (collections + row counts), `host0 records {app} tickets --export > tickets.json` (full JSON dump). With curl:
+
 ```bash
 # collections + row counts
 curl -sS {base}/api/v1/apps/{app_id_or_slug}/records \
@@ -359,7 +383,7 @@ The Data tab of the app's dashboard page shows the same, with an export button p
 
 The user signs in on host0 in **their own browser** and approves a short code. You never see or send their email or password.
 
-1. Run `./scripts/publish.sh --login` — or just run the publish; with no key it starts the login itself. It exits with code **3** (waiting for the user) and prints on stderr:
+1. Run `./scripts/publish.sh --login` (CLI: `host0 login`) — or just run the publish; with no key it starts the login itself. It exits with code **3** (waiting for the user) and prints on stderr:
 
    ```
    login_result.status=pending
@@ -369,12 +393,12 @@ The user signs in on host0 in **their own browser** and approves a short code. Y
    ```
 
 2. Show the user `login_result.verification_url` as a clickable link and the `login_result.user_code`: "Open this link, sign in, check the page shows WDJB-MJHT, and approve." The code expires in 10 minutes.
-3. In the **same turn**, run `./scripts/publish.sh --login-wait` (or the same publish command again). It waits up to 90s (`--wait {seconds}`) for the approval, saves the key to `~/.host0/credentials` (chmod 600) and, for a publish, carries on to the live URL.
+3. In the **same turn**, run `./scripts/publish.sh --login-wait` (CLI: `host0 login --wait`) (or the same publish command again). It waits up to 90s (`--wait {seconds}`; CLI `--timeout {seconds}`) for the approval, saves the key to `~/.host0/credentials` (chmod 600) and, for a publish, carries on to the live URL.
 4. Exit code 3 again means the user hasn't approved yet — run the same command again; **don't start a new login** (that would replace the code they're looking at). An expired code is replaced automatically, with a new link to show.
 5. `login_result.status=denied` (exit 1) — the user said no. Ask before starting another one.
 6. A publish that fails with `host0: the api key from … was rejected` (revoked, or saved from another account): a publish only starts a login when there's no key at all, so run `./scripts/publish.sh --login` yourself and continue from step 2 — the approved key replaces the saved one.
 
-The raw REST pair, if you can't run the script:
+The raw REST pair, if you can run neither tool:
 
 ```bash
 curl -sS -X POST {base}/api/v1/auth/device -H "x-host0-client: {your-agent}"
@@ -417,7 +441,7 @@ mkdir -p ~/.host0 && printf '%s' "h0_your_key_here" > ~/.host0/credentials && ch
 
 ## API key storage
 
-The publish script reads the key from these sources (first match wins):
+Both tools read the key from these sources (first match wins):
 
 1. `--api-key {key}` flag (CI/scripting only — avoid in interactive use)
 2. `$HOST0_API_KEY` environment variable
@@ -427,7 +451,7 @@ When none is set, a publish starts a device login instead (`--no-login` makes it
 
 ## State file
 
-After every publish, the script writes `.host0/state.json` inside the published directory (single-file publishes: in the file's folder, with `"source": "{filename}"` on the entry; directory entries carry `"source": "."`):
+After every publish, the CLI or the script writes `.host0/state.json` inside the published directory (single-file publishes: in the file's folder, with `"source": "{filename}"` on the entry; directory entries carry `"source": "."`):
 
 ```json
 {
@@ -454,7 +478,7 @@ Treat the file as internal cache only: never present this local file path as a U
 
 ## What to tell the user
 
-Read the `login_result.*` and `publish_result.*` lines from script stderr:
+Read the `login_result.*` and `publish_result.*` lines from stderr (the CLI and `publish.sh` print the same ones):
 
 - Exit code 3 with `login_result.status=pending`: give the user `login_result.verification_url` as a link and `login_result.user_code`, say it expires in 10 minutes and that they should check the page shows the same code, then run the same command again.
 - `login_result.status=approved`: say "Signed in as `login_result.email`". The key is saved; it never goes into the conversation.
@@ -469,7 +493,7 @@ Read the `login_result.*` and `publish_result.*` lines from script stderr:
 - When the publish fails with `public_app_limit_reached`: the files are live but the app kept its previous visibility; offer `--visibility link` instead.
 - When a publish fails, `publish_result.error` is the machine code (e.g. `file_too_large`, `deploy_too_large`, `storage_quota_exceeded`, `public_app_limit_reached`, `app_limit_reached`) — tell the user in plain words which limit was hit, using the script's message (it names the file and the numbers). When `publish_result.upgrade_url` is there too, follow "When an error has `upgrade_url`" below.
 - When `publish_result.action=create` and `publish_result.state_pruned` is above 0: say plainly that the cached app could not be reached with this key so a **new** app was created at a new URL, and offer to re-publish with `--slug <slug>` if they wanted the old one.
-- When a publish fails: if the run had just created the app, the script deletes it again so no empty app is left behind, and reports `publish_result.cleanup=deleted` (with `publish_result.cleanup_slug`). If `cleanup=failed`, retry the cleanup yourself with `DELETE {base}/api/v1/apps/{cleanup_slug}` — or tell the user the app name from `publish_result.cleanup_slug` and that the app's Settings tab in the dashboard has a delete button. No `cleanup*` line appears on a successful publish, or when the run updated an app it did not create.
+- When a publish fails: if the run had just created the app, the script deletes it again so no empty app is left behind, and reports `publish_result.cleanup=deleted` (with `publish_result.cleanup_slug`). If `cleanup=failed`, retry the cleanup yourself with `host0 rm {cleanup_slug} --yes` or `DELETE {base}/api/v1/apps/{cleanup_slug}` — or tell the user the app name from `publish_result.cleanup_slug` and that the app's Settings tab in the dashboard has a delete button. No `cleanup*` line appears on a successful publish, or when the run updated an app it did not create.
 - Mention the dashboard at the platform origin (e.g. `https://host0.ai/dashboard`) for managing apps in a browser.
 - Never point users at `.host0/state.json`.
 
@@ -504,7 +528,7 @@ Never retry the same publish in a loop — it fails the same way until something
 | `--pull` | Download the live files of `--slug`/`--app-id` into `[dir]` (default `./{slug}`; new or empty) to edit and publish back |
 | `--visibility {mode}` | Set `private`, `link` (anyone with the URL, never indexed), or `public` (public on the web, indexable) after publish |
 | `--message {text}` | A note for this version — what changed (up to 200 characters; longer fails with `bad_request` before anything uploads) |
-| `--client {name}` | Agent name for attribution, e.g. `claude-ai`, `chatgpt` (sends `x-host0-client: {name}/{script version}`; default `$HOST0_CLIENT`, else detected for Claude Code, Codex, Cursor, Gemini CLI…) — pass it when the script can't detect you |
+| `--client {name}` | Agent name for attribution, e.g. `claude-ai`, `chatgpt` (sends `x-host0-client: {name}/{script version}` — the CLI sends `{name}/cli-{version}`; default `$HOST0_CLIENT`, else detected for Claude Code, Codex, Cursor, Gemini CLI…) — pass it when the script can't detect you |
 | `--api-key {key}` | API key override (prefer the credentials file) |
 | `--base-url {url}` | API base (default: `https://host0.ai`) |
 | `--allow-nonhost0-base-url` | Allow sending auth to a non-default `--base-url` |
@@ -515,12 +539,14 @@ Never retry the same publish in a loop — it fails the same way until something
 
 Exit codes: `0` ok · `1` error · `3` waiting for the user to approve the device login.
 
+`host0 deploy` takes the same flags, except `--wait` is `--timeout` (see "Which tool"); `--login`, `--login-wait` and `--pull` are the `login`, `login --wait` and `pull` commands.
+
 ## Beyond publish.sh
 
-Everything else — listing apps, app detail, shares, deployment status, versions — is plain REST per the live index at `GET {base}/api/v1`, authenticated with `authorization: bearer h0_…`.
+Everything else — listing apps, app detail, shares, deployment status, versions — is a CLI command (`host0 ls`, `host0 inspect {app}`, …, or `host0 api {path}`) or plain REST per the live index at `GET {base}/api/v1`, authenticated with `authorization: bearer h0_…`.
 
-`DELETE /api/v1/apps/{app_id_or_slug}` deletes an app completely, live or not: its URL stops working (404), and its deployments, shares and shared records are deleted with it (the slug stays reserved for the user for 30 days). It cannot be undone — only do it when the user asks, confirm first, and export records first if they matter. To just take an app out of view, make it private instead. The publish script uses the same call to clean up an app whose first deploy failed (an empty app still counts against the account's app cap). The app's Settings tab in the dashboard has the same delete button.
+`host0 rm {app} --yes` or `DELETE /api/v1/apps/{app_id_or_slug}` deletes an app completely, live or not: its URL stops working (404), and its deployments, shares and shared records are deleted with it (the slug stays reserved for the user for 30 days). It cannot be undone — only do it when the user asks, confirm first, and export records first if they matter. To just take an app out of view, make it private instead. Both tools use the same call to clean up an app whose first deploy failed (an empty app still counts against the account's app cap). The app's Settings tab in the dashboard has the same delete button.
 
 ## The host0 MCP server manages, it doesn't deploy
 
-This skill is how agents deploy to host0 — the MCP server has no deploy or create tool. (People can also publish by dropping files on their host0 dashboard in the browser, and upload a new version of an existing app by dropping files on its Versions tab.) If the user also has host0 connected as an MCP server (`{base}/mcp`), its tools manage apps that already exist: `list_apps`, `get_app`, `get_deploy_status`, `get_analytics`, `list_versions`, `restore_version`, `set_visibility`, `rename_app`, `share`, `unshare`, and `delete_app` (deletes an app completely, live or not). Use whichever is at hand for those — they call the same service as the REST endpoints above. To put new files live, always use `publish.sh`.
+This skill is how agents deploy to host0 — the MCP server has no deploy or create tool. (People can also publish by dropping files on their host0 dashboard in the browser, and upload a new version of an existing app by dropping files on its Versions tab.) If the user also has host0 connected as an MCP server (`{base}/mcp`), its tools manage apps that already exist: `list_apps`, `get_app`, `get_deploy_status`, `get_analytics`, `list_versions`, `restore_version`, `set_visibility`, `rename_app`, `share`, `unshare`, and `delete_app` (deletes an app completely, live or not). Use whichever is at hand for those — they call the same service as the REST endpoints above. To put new files live, always use this skill — `host0 deploy` or `publish.sh`.
