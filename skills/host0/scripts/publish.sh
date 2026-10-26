@@ -10,7 +10,7 @@ set -euo pipefail
 
 # bump on every change to this script: it rides in x-host0-client
 # (<agent>/<version>) so the first-deploy metrics can tell script versions apart.
-PUBLISH_SH_VERSION="2026.10.10"
+PUBLISH_SH_VERSION="2026.10.26"
 DEFAULT_BASE_URL="https://host0.ai"
 BASE_URL="$DEFAULT_BASE_URL"
 CREDENTIALS_FILE="$HOME/.host0/credentials"
@@ -101,7 +101,28 @@ cleanup_orphan_app() {
   fi
   CLEANUP_DONE=1
 
-  local code
+  local code status_out
+  # a finalize that went through on the server but whose answer never came
+  # back (a reset, a not_pending whose status read then failed) leaves a
+  # live app behind this failure. ask the deployment first and never delete
+  # blind: a live — or unknown — deployment keeps the app.
+  if [[ -n "${DEPLOYMENT_ID:-}" ]]; then
+    set +e
+    status_out=$(net_curl idem -sS "$BASE_URL/api/v1/deployments/$DEPLOYMENT_ID" \
+      -H "authorization: Bearer $API_KEY" \
+      -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" \
+      -w '\n%{http_code}' 2>/dev/null)
+    code=$?
+    set -e
+    if [[ $code -ne 0 || "${status_out##*$'\n'}" != "200" ]] ||
+       [[ "$(echo "${status_out%$'\n'*}" | jq -r '.live // false' 2>/dev/null)" != "false" ]]; then
+      echo "warning: not deleting the app this run created ($CREATED_APP_SLUG, $CREATED_APP_ID) — its deployment may have gone live. Check it with GET $BASE_URL/api/v1/apps/$CREATED_APP_SLUG and delete it from your dashboard if it isn't." >&2
+      echo "publish_result.cleanup=failed" >&2
+      echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
+      exit $rc
+    fi
+  fi
+
   set +e
   code=$(net_curl once -sS -o /dev/null -w '%{http_code}' -X DELETE \
     "$BASE_URL/api/v1/apps/$CREATED_APP_ID" \
@@ -916,19 +937,12 @@ LIVE_VERSION=$(echo "$FIN_RESP" | jq -r '.version // empty' 2>/dev/null || true)
 PREVIOUS_VERSION=$(echo "$FIN_RESP" | jq -r '.previous_version // empty' 2>/dev/null || true)
 
 # the app is live — it is no longer a cleanup candidate. a failure in the
-# steps below (visibility, state file) must never delete a live app.
+# steps below (state file, visibility) must never delete a live app.
 CREATED_APP_ID=""
 
-# optional: set visibility
-if [[ -n "$VISIBILITY" ]]; then
-  echo "Setting visibility to $VISIBILITY..." >&2
-  BODY=$(jq -n --arg v "$VISIBILITY" '{visibility: $v}')
-  VIS_RESP=$(api PATCH "/api/v1/apps/$APP_ID" "$BODY")
-  check_api_error "$VIS_RESP" "set visibility"
-  APP_VISIBILITY=$(echo "$VIS_RESP" | jq -r '.visibility')
-fi
-
-# save state (internal cache — never source of truth)
+# save state (internal cache — never source of truth) before the optional
+# visibility change: if that PATCH fails (e.g. public_app_limit_reached), the
+# next run must still update this app rather than create a duplicate.
 mkdir -p "$STATE_DIR"
 if [[ -f "$STATE_FILE" ]]; then
   STATE=$(cat "$STATE_FILE")
@@ -948,6 +962,15 @@ entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
 STATE=$(echo "$STATE" | jq --arg k "$APP_SLUG" --arg a "$APP_ID" --argjson e "$entry" \
   '.apps = ((.apps // {}) | with_entries(select(.value.app_id != $a))) | .apps[$k] = $e')
 echo "$STATE" | jq '.' > "$STATE_FILE"
+
+# optional: set visibility
+if [[ -n "$VISIBILITY" ]]; then
+  echo "Setting visibility to $VISIBILITY..." >&2
+  BODY=$(jq -n --arg v "$VISIBILITY" '{visibility: $v}')
+  VIS_RESP=$(api PATCH "/api/v1/apps/$APP_ID" "$BODY")
+  check_api_error "$VIS_RESP" "set visibility"
+  APP_VISIBILITY=$(echo "$VIS_RESP" | jq -r '.visibility')
+fi
 
 # stdout: the live url, nothing else
 echo "$LIVE_URL"
