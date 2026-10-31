@@ -306,11 +306,13 @@ async function whoami() {
     : `Signed in as ${esc(me.email)}`;
 }
 
-// any records call can answer 401 — that's a redirect, not an error.
+// any records call can answer 401 — offer sign-in, don't redirect: load()
+// runs on page load, and a write would lose what the visitor typed.
 async function send(url, options) {
   const res = await fetch(url, options);
   if (res.status === 401) {
-    location.href = (await res.json()).signin_url;   // returns to this page
+    const { signin_url } = await res.json();          // returns to this page
+    who.innerHTML = `<a href="${esc(signin_url)}">Sign in to do that</a>`;
     return null;
   }
   const body = await res.json();
@@ -358,7 +360,7 @@ setInterval(load, 4000);   // collaboration in v1 is polling
 - **Handle `401` on every call**, not just reads: the body carries `signin_url` — send the visitor there rather than showing a raw error.
 - **Show `message` on failure**: every error body has a human-readable `message`.
 - **PATCH only what changed** — that's what stops two people editing the same record from clobbering each other.
-- **Read `created_by_email` off the envelope**, not out of `data`.
+- **Read `created_by_email` off the envelope**, not out of `data`. It's `null` for readers who aren't the owner, an invited member or the record's author (anonymous visitors of a link app, signed-in strangers) — always render a fallback, or add a `name` field if strangers should see who wrote it.
 - Don't build a login screen or store passwords. Identity is `/.h0/me`, and access is the app's share list.
 
 ### Getting the data out
