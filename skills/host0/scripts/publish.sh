@@ -10,7 +10,7 @@ set -euo pipefail
 
 # bump on every change to this script: it rides in x-host0-client
 # (<agent>/<version>) so the first-deploy metrics can tell script versions apart.
-PUBLISH_SH_VERSION="2026.10.26"
+PUBLISH_SH_VERSION="2026.10.31"
 DEFAULT_BASE_URL="https://host0.ai"
 BASE_URL="$DEFAULT_BASE_URL"
 CREDENTIALS_FILE="$HOME/.host0/credentials"
@@ -94,8 +94,8 @@ die() { echo "error: $1" >&2; exit 1; }
 # on a failed run, delete the app this run created so a failed first publish
 # doesn't leave an orphan app (it counts against the account's app cap). only
 # ever touches an app created by this run, and only before it went live.
-cleanup_orphan_app() {
-  local rc=$?
+cleanup_orphan_app() {  # cleanup_orphan_app <exit status>
+  local rc=$1
   if [[ $rc -eq 0 || "$CLEANUP_DONE" -eq 1 || -z "$CREATED_APP_ID" ]]; then
     return 0
   fi
@@ -109,7 +109,7 @@ cleanup_orphan_app() {
   if [[ -n "${DEPLOYMENT_ID:-}" ]]; then
     set +e
     status_out=$(net_curl idem -sS "$BASE_URL/api/v1/deployments/$DEPLOYMENT_ID" \
-      -H "authorization: Bearer $API_KEY" \
+      -K "$AUTH_CFG" \
       -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" \
       -w '\n%{http_code}' 2>/dev/null)
     code=$?
@@ -119,14 +119,14 @@ cleanup_orphan_app() {
       echo "warning: not deleting the app this run created ($CREATED_APP_SLUG, $CREATED_APP_ID) — its deployment may have gone live. Check it with GET $BASE_URL/api/v1/apps/$CREATED_APP_SLUG and delete it from your dashboard if it isn't." >&2
       echo "publish_result.cleanup=failed" >&2
       echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
-      exit $rc
+      return 0
     fi
   fi
 
   set +e
   code=$(net_curl once -sS -o /dev/null -w '%{http_code}' -X DELETE \
     "$BASE_URL/api/v1/apps/$CREATED_APP_ID" \
-    -H "authorization: Bearer $API_KEY" \
+    -K "$AUTH_CFG" \
     -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" 2>/dev/null)
   set -e
 
@@ -139,11 +139,18 @@ cleanup_orphan_app() {
     echo "publish_result.cleanup=failed" >&2
     echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
   fi
-  exit $rc
+}
+# EXIT: the orphan cleanup (it still needs the key), then the private temp dir
+# holding the key's curl config goes.
+on_exit() {
+  local rc=$?
+  cleanup_orphan_app "$rc"
+  if [[ -n "${SECRET_DIR:-}" ]]; then rm -rf "$SECRET_DIR"; fi
+  exit "$rc"
 }
 # the signal traps exit rather than clean up directly, so the EXIT trap runs
 # once with a non-zero status (on a bare INT trap $? can still be 0).
-trap cleanup_orphan_app EXIT
+trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -200,6 +207,30 @@ net_curl() {  # net_curl idem|once <curl args…> → curl's stdout
 
 command -v curl >/dev/null 2>&1 || die "requires curl — install curl and retry"
 command -v jq >/dev/null 2>&1 || die "requires jq — install jq (e.g. brew install jq / apt install jq) and retry"
+
+# secrets never go on a command line: argv is readable by every local user
+# (ps). the bearer key reaches curl through a config file (-K, any curl
+# version) and the device code through a request-body file, both 0600 in a
+# 0700 temp dir that the EXIT trap removes (a kill -9 leaves it behind, in
+# the user's own temp dir).
+SECRET_DIR=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/host0-secrets.XXXXXX") ||
+  die "could not create a private temp dir in ${TMPDIR:-/tmp}"
+chmod 700 "$SECRET_DIR"
+AUTH_CFG="$SECRET_DIR/auth.curlrc"
+DEVICE_BODY_FILE="$SECRET_DIR/device-token.json"
+
+# write the curl config that carries the bearer key; call again whenever
+# API_KEY changes. builtins only (printf), so the key never reaches an argv.
+write_auth_config() {
+  local k="$API_KEY"
+  case "$k" in
+    *[[:space:][:cntrl:]]*) die "the API key contains whitespace or control characters — check HOST0_API_KEY / --api-key / $CREDENTIALS_FILE" ;;
+  esac
+  # curl config quoting: backslash and double quote are escaped inside "…"
+  k=${k//\\/\\\\}
+  k=${k//\"/\\\"}
+  ( umask 077 && printf 'header = "authorization: Bearer %s"\n' "$k" > "$AUTH_CFG" )
+}
 
 if command -v shasum >/dev/null 2>&1; then
   SHA_TOOL="shasum"
@@ -428,12 +459,14 @@ device_start() {  # device_start [note]
   DEV_EXPIRES_AT=$(( $(date +%s) + $(echo "$resp" | jq -r '.expires_in // 600') ))
   [[ -n "$DEV_DEVICE_CODE" && -n "$DEV_USER_CODE" ]] || die "start sign-in: unexpected response: $resp"
 
+  # the device code (it redeems the key) goes to jq through the environment,
+  # never its argv.
   ( umask 077
     mkdir -p "$(dirname "$DEVICE_STATE_FILE")"
-    jq -n --arg b "$BASE_URL" --arg d "$DEV_DEVICE_CODE" --arg u "$DEV_USER_CODE" \
+    H0_DEVICE_CODE="$DEV_DEVICE_CODE" jq -n --arg b "$BASE_URL" --arg u "$DEV_USER_CODE" \
       --arg v "$DEV_URI" --arg c "$DEV_URI_COMPLETE" \
       --argjson i "$DEV_INTERVAL" --argjson e "$DEV_EXPIRES_AT" \
-      '{base_url: $b, device_code: $d, user_code: $u, verification_uri: $v,
+      '{base_url: $b, device_code: env.H0_DEVICE_CODE, user_code: $u, verification_uri: $v,
         verification_uri_complete: $c, interval: $i, expires_at: $e}' \
       > "$DEVICE_STATE_FILE"
     chmod 600 "$DEVICE_STATE_FILE" )
@@ -457,12 +490,14 @@ device_wait() {
   local deadline now out rc status body err key email prefix
   deadline=$(( $(date +%s) + LOGIN_WAIT_SECONDS ))
   echo "Waiting for approval of code $DEV_USER_CODE (up to ${LOGIN_WAIT_SECONDS}s)…" >&2
+  # the poll body carries the device code: a 0600 file, not an argv
+  ( umask 077 && H0_DEVICE_CODE="$DEV_DEVICE_CODE" jq -n '{device_code: env.H0_DEVICE_CODE}' > "$DEVICE_BODY_FILE" )
   while :; do
     set +e
     out=$(net_curl idem -sS -X POST "$BASE_URL/api/v1/auth/device/token" \
       -H "x-host0-client: $CLIENT_HEADER_VALUE" \
       -H "content-type: application/json" \
-      -d "$(jq -n --arg d "$DEV_DEVICE_CODE" '{device_code: $d}')" \
+      --data-binary "@$DEVICE_BODY_FILE" \
       -w '\n%{http_code}')
     rc=$?
     set -e
@@ -555,6 +590,7 @@ case "$MODE" in
         device_start
       fi
     fi
+    write_auth_config
     ;;
 esac
 
@@ -586,7 +622,7 @@ api_probe() {
   local method="$1" path="$2" out rc
   set +e
   out=$(net_curl idem -s -X "$method" "$BASE_URL$path" \
-    -H "authorization: Bearer $API_KEY" \
+    -K "$AUTH_CFG" \
     -H "x-host0-client: $CLIENT_HEADER_VALUE" \
     -w '\n%{http_code}')
   rc=$?
@@ -607,13 +643,13 @@ api() {
   [[ "$method" == "POST" ]] && mode="once"
   if [[ -n "$body" ]]; then
     net_curl "$mode" -sS -X "$method" "$BASE_URL$path" \
-      -H "authorization: Bearer $API_KEY" \
+      -K "$AUTH_CFG" \
       -H "x-host0-client: $CLIENT_HEADER_VALUE" \
       -H "content-type: application/json" \
       -d "$body"
   else
     net_curl "$mode" -sS -X "$method" "$BASE_URL$path" \
-      -H "authorization: Bearer $API_KEY" \
+      -K "$AUTH_CFG" \
       -H "x-host0-client: $CLIENT_HEADER_VALUE"
   fi
 }
@@ -625,6 +661,36 @@ compute_sha256() {
   else
     sha256sum "$f" | cut -d' ' -f1
   fi
+}
+
+# a path from the api that --pull may write under its folder: relative, no
+# empty / "." / ".." segment (backslashes count as separators), and not in
+# .host0/ — where the state file lives — in any letter case (macOS and
+# Windows filesystems fold case). mirrors isSafeRelativePath in
+# packages/cli/src/commands/pull.ts.
+pull_path_ok() {  # pull_path_ok <path> → 0 when safe
+  local n first
+  [[ -n "$1" ]] || return 1
+  n="/${1//\\//}/"
+  case "$n" in
+    *//*|*/./*|*/../*) return 1 ;;
+  esac
+  first="${n#/}"
+  first="${first%%/*}"
+  [[ "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" != ".host0" ]]
+}
+
+# no existing component of <dir>/<path> below <dir> is a symlink, so a write
+# can't be redirected out of the folder.
+pull_no_symlinks() {  # pull_no_symlinks <dir> <path> → 0 when clean
+  local cur="$1" rest="$2" part
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    cur="$cur/$part"
+    [[ -L "$cur" ]] && return 1
+  done
+  return 0
 }
 
 # ── pull: the live version of an app into a folder ──
@@ -649,21 +715,29 @@ if [[ "$MODE" == "pull" ]]; then
   if [[ -d "$DEST" ]] && [[ -n "$(ls -A "$DEST" | grep -v '^\.host0$' || true)" ]]; then
     die "$DEST isn't empty — pull into a new folder (e.g. publish.sh --pull --slug $APP_SLUG ./$APP_SLUG-live) so nothing local is overwritten"
   fi
+  FILE_ROWS=$(echo "$FILES_RESP" | jq -r '.files[] | [.path, .download_url, (.sha256 // "")] | @tsv')
+  # check every path before anything is written (as the CLI does)
+  if [[ -n "$FILE_ROWS" ]]; then
+    while IFS=$'\t' read -r fpath furl fsha; do
+      pull_path_ok "$fpath" || die "refusing an unsafe path from the api: $fpath"
+    done <<< "$FILE_ROWS"
+  fi
   mkdir -p "$DEST"
   DEST_ABS=$(cd "$DEST" && pwd)
+  # a .host0 that is a symlink (or a file) would send the state file elsewhere
+  if [[ -L "$DEST_ABS/.host0" ]] || { [[ -e "$DEST_ABS/.host0" ]] && [[ ! -d "$DEST_ABS/.host0" ]]; }; then
+    die "$DEST_ABS/.host0 isn't a plain folder — remove it, or pull into a new folder"
+  fi
   COUNT=0
   while IFS=$'\t' read -r fpath furl fsha; do
     [[ -n "$fpath" ]] || continue
-    # paths come from our own manifest validation, but never write outside DEST
-    case "/$fpath/" in
-      */../*|*/./*|//*) die "refusing an unsafe path from the api: $fpath" ;;
-    esac
+    pull_no_symlinks "$DEST_ABS" "$fpath" || die "refusing to write $fpath through a symlink in $DEST_ABS"
     mkdir -p "$DEST_ABS/$(dirname "$fpath")"
     # the bearer key goes to the api base url only — signed data-plane urls
     # carry their own authorization.
     if [[ "$furl" == "$BASE_URL/"* ]]; then
       net_curl idem -sS -f -o "$DEST_ABS/$fpath" "$furl" \
-        -H "authorization: Bearer $API_KEY" \
+        -K "$AUTH_CFG" \
         -H "x-host0-client: $CLIENT_HEADER_VALUE" >/dev/null || die "could not download $fpath"
     else
       net_curl idem -sS -f -o "$DEST_ABS/$fpath" "$furl" >/dev/null || die "could not download $fpath"
@@ -673,12 +747,13 @@ if [[ "$MODE" == "pull" ]]; then
       [[ "$got" == "$fsha" ]] || die "$fpath downloaded with the wrong hash ($got, expected $fsha) — run --pull again"
     fi
     COUNT=$((COUNT + 1))
-  done < <(echo "$FILES_RESP" | jq -r '.files[] | [.path, .download_url, (.sha256 // "")] | @tsv')
+  done <<< "$FILE_ROWS"
 
   # the same state entry a publish of DEST writes, so the next publish of the
   # folder updates this app instead of creating one.
   mkdir -p "$DEST_ABS/.host0"
   PULL_STATE_FILE="$DEST_ABS/.host0/state.json"
+  [[ ! -L "$PULL_STATE_FILE" ]] || die "$PULL_STATE_FILE is a symlink — remove it, or pull into a new folder"
   if [[ -f "$PULL_STATE_FILE" ]]; then STATE=$(cat "$PULL_STATE_FILE"); else STATE='{"apps":{}}'; fi
   entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
     --arg b "$BASE_URL" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -902,7 +977,7 @@ while [[ $i -lt $TARGET_COUNT ]]; do
   # (forward-compatible with presigned storage urls)
   # (exact origin match, not a prefix: http://localhost:3000.evil.com must not match)
   if [[ "$(url_origin "$t_url")" == "$BASE_ORIGIN" ]]; then
-    header_args+=(-H "authorization: Bearer $API_KEY")
+    header_args+=(-K "$AUTH_CFG")
   fi
 
   PUT_RESP=$(net_curl idem -sS -X PUT "$t_url" \
@@ -918,7 +993,7 @@ echo "Finalizing..." >&2
 # go through, the api answers not_pending — then the deployment's own status
 # says whether it is live, and that is the answer.
 FIN_RESP=$(net_curl idem -sS -X POST "$FINALIZE_URL" \
-  -H "authorization: Bearer $API_KEY" \
+  -K "$AUTH_CFG" \
   -H "x-host0-client: $CLIENT_HEADER_VALUE" \
   -H "content-type: application/json" \
   -d '{}')
