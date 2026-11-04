@@ -217,7 +217,7 @@ This is how you build a small tool a team shares: a todo list, a ticket board, a
 - Field types: `string`, `number`, `boolean`, `json` (arbitrary object). Constraints: `required`, `default`, `maxLength`, `enum`.
 - The manifest is validated at deploy — a mistake fails the upload with the exact line to fix, before anything goes live. Read the message; it says what to change.
 - Adding a collection or an optional field is applied by the next publish. Removing a collection stops serving it but **keeps** its data (still exportable).
-- No `h0.json` → no records, and the site publishes exactly as before.
+- No `h0.json` → no records, and the site publishes exactly as before. An `h0.json` must have a `records` key, and it's the only top-level key: anything else is refused with `invalid_manifest`. `{"records": {}}` declares no collections.
 
 ### Shared or per-person? Ask first
 
