@@ -10,7 +10,7 @@ set -euo pipefail
 
 # bump on every change to this script: it rides in x-host0-client
 # (<agent>/<version>) so the first-deploy metrics can tell script versions apart.
-PUBLISH_SH_VERSION="2026.10.31"
+PUBLISH_SH_VERSION="2026.11.04"
 DEFAULT_BASE_URL="https://host0.ai"
 BASE_URL="$DEFAULT_BASE_URL"
 CREDENTIALS_FILE="$HOME/.host0/credentials"
@@ -293,7 +293,9 @@ BASE_URL="${BASE_URL%/}"
 # comes last: every process started from cursor's terminal inherits it,
 # including other agents run there.
 detect_agent() {
-  if [[ -n "${AI_AGENT:-}" ]]; then echo "$AI_AGENT"
+  # claude code sets claude-code_2-1-309_agent: label the agent, not its version
+  if [[ "${AI_AGENT:-}" =~ ^([^_]+)_[0-9][0-9.-]*_agent$ ]]; then echo "${BASH_REMATCH[1]}"
+  elif [[ -n "${AI_AGENT:-}" ]]; then echo "$AI_AGENT"
   elif [[ -n "${CLAUDECODE:-}${CLAUDE_CODE:-}" ]]; then
     if [[ -n "${CLAUDE_CODE_IS_COWORK:-}" ]]; then echo "claude-cowork"; else echo "claude-code"; fi
   elif [[ -n "${CODEX_SANDBOX:-}${CODEX_CI:-}${CODEX_THREAD_ID:-}" ]]; then echo "codex"
@@ -719,7 +721,8 @@ if [[ "$MODE" == "pull" ]]; then
   # check every path before anything is written (as the CLI does)
   if [[ -n "$FILE_ROWS" ]]; then
     while IFS=$'\t' read -r fpath furl fsha; do
-      pull_path_ok "$fpath" || die "refusing an unsafe path from the api: $fpath"
+      # %b undoes @tsv's escapes (a backslash comes through doubled)
+      pull_path_ok "$fpath" || die "refusing an unsafe path from the api: $(printf '%b' "$fpath")"
     done <<< "$FILE_ROWS"
   fi
   mkdir -p "$DEST"
