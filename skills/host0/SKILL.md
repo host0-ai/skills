@@ -33,7 +33,7 @@ curl -sS {base}/api/v1
 
 It returns the current endpoint list, file caps, and the platform contract (what host0 serves today). Send the API key (`-H "authorization: bearer $HOST0_API_KEY"`) and `limits` and `plan` are the user's own — caps depend on the account's plan; without a key you get the defaults for a new account. `GET {base}/api/v1/account` adds what the account has used this month. If this skill text and live API behavior disagree, trust the live API.
 
-To install or update this skill: `npx skills add host0-ai/skills` (any agent the [skills CLI](https://skills.sh) supports; source: https://github.com/host0-ai/skills), or fetch two files: `https://host0.ai/skill.md` → save as `SKILL.md`, and `https://host0.ai/publish.sh` → save as `scripts/publish.sh` next to it, then `chmod +x scripts/publish.sh`. The script's URL is `/publish.sh` — there's no `/scripts/` in it.
+To install or update this skill: `npx skills add host0-ai/skills` (any agent the [skills CLI](https://skills.sh) supports; source: https://github.com/host0-ai/skills), or `npx skills add https://host0.ai` to install it straight from host0 (that install doesn't keep the executable bit: run `chmod +x scripts/publish.sh` afterwards), or fetch two files: `https://host0.ai/skill.md` → save as `SKILL.md`, and `https://host0.ai/publish.sh` → save as `scripts/publish.sh` next to it, then `chmod +x scripts/publish.sh`. The script's URL is `/publish.sh` — there's no `/scripts/` in it.
 
 ## Which tool: the host0 CLI or publish.sh
 

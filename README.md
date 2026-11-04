@@ -10,7 +10,7 @@
 npx skills add host0-ai/skills
 ```
 
-Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Windsurf, Cline and every other agent the [skills CLI](https://github.com/vercel-labs/skills) supports. Add `-g` to install it for all your projects.
+Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Windsurf, Cline and every other agent the [skills CLI](https://github.com/vercel-labs/skills) supports. Add `-g` to install it for all your projects. `npx skills add https://host0.ai` installs the same skill straight from host0.
 
 No CLI? Fetch the two files yourself: [`host0.ai/skill.md`](https://host0.ai/skill.md) → `SKILL.md` and [`host0.ai/publish.sh`](https://host0.ai/publish.sh) → `scripts/publish.sh`.
 
