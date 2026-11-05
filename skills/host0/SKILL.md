@@ -176,6 +176,18 @@ Slugs are 1–63 lowercase letters, digits or hyphens, with no hyphen at the sta
 
 The app's display name (shown in the dashboard and `GET /api/v1/apps`) is separate from its URL — change it with `host0 rename {app} --name "Team todo"` or `PATCH {base}/api/v1/apps/{app_id}` `{"name": "Team todo"}` (1–100 characters); the URL doesn't change.
 
+## Custom domains
+
+On Pro, an app can also answer on the user's own domain, up to the plan's limit; the `host0.app` URL keeps working. Ask which hostname they want (a subdomain like `blog.acme.com` works with any DNS provider; a root domain needs one that can flatten a CNAME). On Free, the add answers 403 `domain_limit_reached` with `upgrade_url`.
+
+```bash
+host0 domains add {app} blog.acme.com     # prints the two DNS records
+host0 domains verify {app} blog.acme.com  # after the user set them; run it again until active
+host0 domains rm {app} blog.acme.com
+```
+
+Or `POST {base}/api/v1/apps/{app_id}/domains` with `{"hostname":"blog.acme.com"}`, then `POST …/domains/blog.acme.com/verify`. Show the user the `dns_records` exactly as returned (a CNAME to `domains.host0.app` and a TXT at `_host0.<hostname>`) and tell them what `last_error` says. The status goes `pending` → `provisioning` → `active`, usually within minutes; only `active` serves. Never tell them the domain is live before `active`. Private apps, invites and shared records work there as usual.
+
 ## Sharing
 
 Invite people by email with `host0 share {app} a@b.com` (CLI) or `POST /api/v1/apps/{app_id_or_slug}/shares` (body `{"emails": ["a@b.com"]}`); remove one with `host0 unshare {app} a@b.com` or `DELETE /api/v1/apps/{app_id_or_slug}/shares/{email}`.
