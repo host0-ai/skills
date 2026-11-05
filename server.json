@@ -7,6 +7,6 @@
   "websiteUrl": "https://host0.ai/agents",
   "repository": { "url": "https://github.com/host0-ai/skills", "source": "github" },
   "remotes": [
-    { "type": "streamable-http", "url": "https://host0.ai/mcp" }
+    { "type": "streamable-http", "url": "https://mcp.host0.ai/mcp" }
   ]
 }

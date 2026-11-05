@@ -2,7 +2,7 @@
   "mcpServers": {
     "host0": {
       "type": "http",
-      "url": "https://host0.ai/mcp"
+      "url": "https://mcp.host0.ai/mcp"
     }
   }
 }
