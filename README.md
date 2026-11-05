@@ -12,7 +12,29 @@ npx skills add host0-ai/skills
 
 Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Windsurf, Cline and every other agent the [skills CLI](https://github.com/vercel-labs/skills) supports. Add `-g` to install it for all your projects. `npx skills add https://host0.ai` installs the same skill straight from host0.
 
-No CLI? Fetch the two files yourself: [`host0.ai/skill.md`](https://host0.ai/skill.md) → `SKILL.md` and [`host0.ai/publish.sh`](https://host0.ai/publish.sh) → `scripts/publish.sh`.
+No Node? One curl command installs the same files into your agent's skills folder. It uses no sudo and never overwrites a copy you changed without `--force`:
+
+```bash
+curl -fsSL https://host0.ai/install.sh | bash
+```
+
+### As a plugin: the skill and the MCP server in one install
+
+The skill publishes; the [MCP server](https://host0.ai/docs#quickstart) manages what's live (sharing, versions, analytics, shared data). The plugin brings both.
+
+Claude Code:
+
+```bash
+/plugin install host0 --marketplace host0-ai/skills
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add host0-ai/skills
+```
+
+Then install host0 from the plugin directory. Cursor reads the same `plugin.json` and `mcp.json`: add this repository as a plugin from Cursor's plugin settings.
 
 ## Use it
 
@@ -32,7 +54,7 @@ The first publish starts a device login: the agent shows a link and a short code
 - **Versions and one-click restore**, cookieless analytics, and a readable URL whenever you rename it.
 - **Any file or folder**: a static site, a single HTML page, a PDF, images, video, Markdown.
 
-host0 is free during the beta. Docs: [host0.ai/docs](https://host0.ai/docs).
+There is a free plan. Docs: [host0.ai/docs](https://host0.ai/docs).
 
 ## Skills
 

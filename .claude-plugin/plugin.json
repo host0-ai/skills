@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "host0",
+  "displayName": "host0",
+  "description": "Publish files, sites and apps with a shared database to a link you can share, and manage them from Claude Code.",
+  "author": { "name": "host0", "email": "support@host0.ai", "url": "https://host0.ai" },
+  "homepage": "https://host0.ai/agents",
+  "repository": "https://github.com/host0-ai/skills",
+  "license": "MIT",
+  "keywords": ["hosting", "deploy", "publish", "share", "database", "mcp"],
+  "documentationUrl": "https://host0.ai/docs",
+  "supportUrl": "mailto:support@host0.ai",
+  "privacyPolicyUrl": "https://host0.ai/legal/privacy",
+  "termsOfServiceUrl": "https://host0.ai/legal/terms"
+}

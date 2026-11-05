@@ -1,0 +1,12 @@
+{
+  "name": "host0",
+  "owner": { "name": "host0", "email": "support@host0.ai" },
+  "metadata": { "description": "The host0 skill and MCP server" },
+  "plugins": [
+    {
+      "name": "host0",
+      "source": "./",
+      "description": "Publish files, sites and apps with a shared database to a link you can share, and manage them from Claude Code."
+    }
+  ]
+}
