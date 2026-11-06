@@ -10,7 +10,7 @@
 npx skills add host0-ai/skills
 ```
 
-Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Windsurf, Cline and every other agent the [skills CLI](https://github.com/vercel-labs/skills) supports. Add `-g` to install it for all your projects. `npx skills add https://host0.ai` installs the same skill straight from host0.
+Works with Claude Code, Cursor, Codex, Antigravity CLI, Gemini CLI, GitHub Copilot, Windsurf, Cline and every other agent the [skills CLI](https://github.com/vercel-labs/skills) supports. Google moved Google AI Pro, Ultra and free users from Gemini CLI to Antigravity CLI on June 18, 2026; Gemini Code Assist Standard and Enterprise licenses and paid API keys keep Gemini CLI. Add `-g` to install it for all your projects. `npx skills add https://host0.ai` installs the same skill straight from host0.
 
 No Node? One curl command installs the same files into your agent's skills folder. It uses no sudo and never overwrites a copy you changed without `--force`:
 
@@ -34,7 +34,9 @@ Codex:
 codex plugin marketplace add host0-ai/skills
 ```
 
-Then install host0 from the plugin directory. Cursor reads the same `plugin.json` and `mcp.json`: add this repository as a plugin from Cursor's plugin settings.
+Then install host0 from the plugin directory.
+
+Cursor supports the same `plugin.json` and `mcp.json`, but host0 isn't in its marketplace yet. Copy this repository to `~/.cursor/plugins/local/host0` and reload Cursor, or install the skill and the MCP server separately. We haven't run the plugin in Cursor.
 
 ## Use it
 
