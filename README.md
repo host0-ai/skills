@@ -36,6 +36,12 @@ codex plugin marketplace add host0-ai/skills
 
 Then install host0 from the plugin directory.
 
+Gemini CLI:
+
+```bash
+gemini extensions install https://github.com/host0-ai/skills
+```
+
 Cursor supports the same `plugin.json` and `mcp.json`, but host0 isn't in its marketplace yet. Copy this repository to `~/.cursor/plugins/local/host0` and reload Cursor, or install the skill and the MCP server separately. We haven't run the plugin in Cursor.
 
 ## Use it

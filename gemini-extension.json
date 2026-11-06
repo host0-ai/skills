@@ -1,0 +1,10 @@
+{
+  "name": "host0",
+  "version": "0.1.0",
+  "description": "Publish files, sites and apps with a shared database to a link you can share, and manage them from your agent.",
+  "mcpServers": {
+    "host0": {
+      "httpUrl": "https://mcp.host0.ai/mcp"
+    }
+  }
+}
