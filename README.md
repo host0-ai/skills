@@ -44,6 +44,10 @@ gemini extensions install https://github.com/host0-ai/skills
 
 Cursor supports the same `plugin.json` and `mcp.json`, but host0 isn't in its marketplace yet. Copy this repository to `~/.cursor/plugins/local/host0` and reload Cursor, or install the skill and the MCP server separately. We haven't run the plugin in Cursor.
 
+### Just the MCP server
+
+Connect any MCP client to `https://mcp.host0.ai/mcp`. It's a hosted remote server (Streamable HTTP) with OAuth sign-in, so there's nothing to install or run. It manages apps you've already published and doesn't deploy: use the skill to publish.
+
 ## Use it
 
 Ask your agent:

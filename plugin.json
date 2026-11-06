@@ -27,7 +27,9 @@
         "defaultPrompt": [
           "Publish this folder with host0 and give me the link.",
           "Build a team todo list with a shared database and publish it with host0."
-        ]
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
       }
     }
   }
