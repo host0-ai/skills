@@ -79,6 +79,8 @@ Under the hood this is a three-step flow: manifest → upload files → finalize
 
 **File structure:** `index.html` must sit at the root of the directory you publish — the directory's contents become the site root. Publish `my-site/` where `my-site/index.html` exists, not a parent folder containing `my-site/`.
 
+**Many pages:** every file keeps its path. `/about` serves `about.html` or `about/index.html` (a folder index gets its trailing slash: `/docs` → `/docs/`), and `/docs/guide` serves `docs/guide.html`, so links can use either form. A `404.html` at the root is served for missing pages. Without one, a missing page path serves `index.html`, so client-side routes in a single-page app deep-link.
+
 **A single file:** pass the file itself (`./scripts/publish.sh report.pdf`) — no `index.html` needed. The app's root URL serves that file (in a browser tab it opens in host0's file viewer — see the badge note below; `?download` gets the original, and PDFs keep range support for large ones), and it's also reachable at `/{filename}`. Use this whenever the user just wants to share one document or image.
 
 **Deploy built output, not source:** if the project uses a build step (React/Vite/Next export, .ts/.tsx/.vue/.svelte), build first and publish the output directory (`dist/`, `build/`, `out/`). Never publish `node_modules/`, `package.json`, or secrets (`.env`, key files) — the API rejects server code and secrets with an actionable message.
