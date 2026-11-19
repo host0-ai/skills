@@ -10,7 +10,7 @@ set -euo pipefail
 
 # bump on every change to this script: it rides in x-host0-client
 # (<agent>/<version>) so the first-deploy metrics can tell script versions apart.
-PUBLISH_SH_VERSION="2026.11.17"
+PUBLISH_SH_VERSION="2026.11.19"
 DEFAULT_BASE_URL="https://host0.ai"
 BASE_URL="$DEFAULT_BASE_URL"
 CREDENTIALS_FILE="$HOME/.host0/credentials"
@@ -36,6 +36,10 @@ LOGIN_WAIT_SECONDS="${HOST0_LOGIN_WAIT_SECONDS:-90}"
 # --slug / --app-id / the state file.
 CREATED_APP_ID=""
 CREATED_APP_SLUG=""
+# the deployment this run started (empty until it exists), and whether it went
+# live — a failed run cancels it only while it provably hasn't.
+DEPLOYMENT_ID=""
+DEPLOY_LIVE=0
 CLEANUP_DONE=0
 
 usage() {
@@ -78,7 +82,8 @@ Options:
   --login                 Start a device login (or re-show the pending one) and
                           exit 3: the user approves it in their browser
   --login-wait            Wait for that approval, save the key, exit 0
-                          (3 = still pending, 1 = denied)
+                          (3 = still pending, 1 = denied, or approved while
+                          the account is at its limit of API keys)
   --wait <seconds>        How long to wait for an approval (default 90, or
                           $HOST0_LOGIN_WAIT_SECONDS)
   --no-login              With no API key, fail instead of starting a login
@@ -91,36 +96,80 @@ USAGE
 
 die() { echo "error: $1" >&2; exit 1; }
 
-# on a failed run, delete the app this run created so a failed first publish
-# doesn't leave an orphan app (it counts against the account's app cap). only
-# ever touches an app created by this run, and only before it went live.
-cleanup_orphan_app() {  # cleanup_orphan_app <exit status>
-  local rc=$1
-  if [[ $rc -eq 0 || "$CLEANUP_DONE" -eq 1 || -z "$CREATED_APP_ID" ]]; then
+# on a failed run, leave nothing half-made behind:
+# - the app this run created is deleted, so a failed first publish doesn't
+#   leave an orphan app (it counts against the account's app cap). only ever an
+#   app created by this run, and only before it went live.
+# - otherwise the deployment this run started is canceled, so it doesn't sit as
+#   an unfinished deploy for 24 hours against the app's cap on those
+#   (deploy_rate_limited with pending_deploys).
+# neither happens blind: the deployment's own status is read first, and a live
+# — or unknown — deployment is left alone, app and all.
+
+# 0 when the deployment this run started provably isn't live (a 200 that says
+# live: false); 1 when it is live, or nothing could be learned.
+deployment_not_live() {
+  local out rc
+  set +e
+  out=$(net_curl idem -sS "$BASE_URL/api/v1/deployments/$DEPLOYMENT_ID" \
+    -K "$AUTH_CFG" \
+    -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" \
+    -w '\n%{http_code}' 2>/dev/null)
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 || "${out##*$'\n'}" != "200" ]]; then return 1; fi
+  [[ "$(echo "${out%$'\n'*}" | jq -r 'if type == "object" and .live == false then "no" else "unknown" end' 2>/dev/null)" == "no" ]]
+}
+
+# best-effort DELETE of the deployment this run started (the api refuses one
+# that went live with a 409). says so when it worked and nothing when it
+# didn't: the stale prune removes the deployment within 24 hours anyway, and
+# the run's exit code and publish_result.* lines never depend on it.
+cancel_deployment() {
+  local code
+  set +e
+  code=$(net_curl idem -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    "$BASE_URL/api/v1/deployments/$DEPLOYMENT_ID" \
+    -K "$AUTH_CFG" \
+    -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" 2>/dev/null)
+  set -e
+  if [[ "$code" == "200" ]]; then
+    echo "host0: canceled the unfinished deploy ($DEPLOYMENT_ID) — ${APP_SLUG:-the app} is unchanged." >&2
+  fi
+  return 0
+}
+
+cleanup_failed_run() {  # cleanup_failed_run <exit status>
+  local rc=$1 code
+  # 3 = waiting for the user to approve a device login: not a failure
+  if [[ $rc -eq 0 || $rc -eq 3 || "$CLEANUP_DONE" -eq 1 ]]; then
+    return 0
+  fi
+  # a deployment to cancel: started by this run and not (known to be) live
+  local pending_deploy=0
+  if [[ -n "$DEPLOYMENT_ID" && "$DEPLOY_LIVE" -eq 0 ]]; then pending_deploy=1; fi
+  if [[ -z "$CREATED_APP_ID" && $pending_deploy -eq 0 ]]; then
     return 0
   fi
   CLEANUP_DONE=1
 
-  local code status_out
   # a finalize that went through on the server but whose answer never came
   # back (a reset, a not_pending whose status read then failed) leaves a
   # live app behind this failure. ask the deployment first and never delete
-  # blind: a live — or unknown — deployment keeps the app.
-  if [[ -n "${DEPLOYMENT_ID:-}" ]]; then
-    set +e
-    status_out=$(net_curl idem -sS "$BASE_URL/api/v1/deployments/$DEPLOYMENT_ID" \
-      -K "$AUTH_CFG" \
-      -H "x-host0-client: ${CLIENT_HEADER_VALUE:-unknown/$PUBLISH_SH_VERSION}" \
-      -w '\n%{http_code}' 2>/dev/null)
-    code=$?
-    set -e
-    if [[ $code -ne 0 || "${status_out##*$'\n'}" != "200" ]] ||
-       [[ "$(echo "${status_out%$'\n'*}" | jq -r '.live // false' 2>/dev/null)" != "false" ]]; then
+  # or cancel blind: a live — or unknown — deployment keeps everything.
+  if [[ $pending_deploy -eq 1 ]] && ! deployment_not_live; then
+    if [[ -n "$CREATED_APP_ID" ]]; then
       echo "warning: not deleting the app this run created ($CREATED_APP_SLUG, $CREATED_APP_ID) — its deployment may have gone live. Check it with GET $BASE_URL/api/v1/apps/$CREATED_APP_SLUG and delete it from your dashboard if it isn't." >&2
       echo "publish_result.cleanup=failed" >&2
       echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
-      return 0
     fi
+    return 0
+  fi
+
+  if [[ -z "$CREATED_APP_ID" ]]; then
+    # an app that existed before this run: only the deployment goes
+    cancel_deployment
+    return 0
   fi
 
   set +e
@@ -131,20 +180,23 @@ cleanup_orphan_app() {  # cleanup_orphan_app <exit status>
   set -e
 
   if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+    # the deployment went with the app: nothing to cancel
     echo "Cleaning up: deleted the app this run created ($CREATED_APP_SLUG) — it never went live." >&2
     echo "publish_result.cleanup=deleted" >&2
     echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
   else
+    # the app stays, so at least its unfinished deployment shouldn't
+    if [[ $pending_deploy -eq 1 ]]; then cancel_deployment; fi
     echo "warning: could not delete the app this run created ($CREATED_APP_SLUG, $CREATED_APP_ID) — delete it from your dashboard (HTTP $code)." >&2
     echo "publish_result.cleanup=failed" >&2
     echo "publish_result.cleanup_slug=$CREATED_APP_SLUG" >&2
   fi
 }
-# EXIT: the orphan cleanup (it still needs the key), then the private temp dir
-# holding the key's curl config goes.
+# EXIT: the cleanup of a failed run (it still needs the key), then the private
+# temp dir holding the key's curl config goes.
 on_exit() {
   local rc=$?
-  cleanup_orphan_app "$rc"
+  cleanup_failed_run "$rc"
   if [[ -n "${SECRET_DIR:-}" ]]; then rm -rf "$SECRET_DIR"; fi
   exit "$rc"
 }
@@ -414,6 +466,11 @@ device_load() {
   return 0
 }
 
+# past the expiry this side wrote down when the login started. that is only
+# this side's guess: the server restarts the clock when the user approves, so
+# a login can outlive it (an approval waiting for an API key to be revoked).
+# nothing is thrown away on this alone — the server's answer to a poll decides
+# (expired_token), and this only says when a poll is worth making.
 device_expired() { [[ $(date +%s) -ge $DEV_EXPIRES_AT ]]; }
 
 device_clear() { rm -f "$DEVICE_STATE_FILE"; }
@@ -485,13 +542,40 @@ save_api_key() {  # save_api_key <key> — atomic, 0600
     mv -f "$tmp" "$CREDENTIALS_FILE" )
 }
 
+# the user approved, but the account already holds its limit of active API
+# keys, so the poll issued none. the approval stays good on the server (its
+# clock restarted when the user approved), so the login is kept: once the user
+# has revoked a key, the same command again picks the new key up with no second
+# approval. exit 1 — nothing more happens until the user acts.
+device_key_limit() {  # device_key_limit <poll body> — never returns
+  local count max url again
+  count=$(echo "$1" | jq -r '.api_keys // empty' 2>/dev/null || true)
+  max=$(echo "$1" | jq -r '.max_api_keys // empty' 2>/dev/null || true)
+  url=$(echo "$1" | jq -r '.keys_url // empty' 2>/dev/null || true)
+  if [[ "$MODE" == "publish" ]]; then
+    again="run this same command again"
+  else
+    again="run publish.sh --login-wait again"
+  fi
+  echo "login_result.status=key_limit" >&2
+  echo "login_result.keys_url=$url" >&2
+  echo "publish_result.error=api_key_limit_reached" >&2
+  die "sign-in: the user approved, but this account already has ${count:-too many} active API keys${max:+ (max $max)}, so no key was issued. Ask the user to revoke one they no longer use on ${url:-the API keys page of their host0 dashboard}, then $again — the approval is kept, so they don't approve a second time (if the code has expired by then, a new one is shown)."
+}
+
 # poll until approved (key saved → returns 0), or exit: 3 still pending at the
-# deadline, 1 denied, 3 with a fresh code when the old one expired. never
-# prints the key.
-device_wait() {
-  local deadline now out rc status body err key email prefix
+# deadline, 1 denied or approved at the account's limit of API keys, 3 with a
+# fresh code when the server says the old one expired. never prints the key.
+# `device_wait once` asks the server a single time and says nothing while it
+# does (for a login this side believes has expired).
+device_wait() {  # device_wait [once]
+  local deadline now out rc status body err key email prefix once="${1:-}"
   deadline=$(( $(date +%s) + LOGIN_WAIT_SECONDS ))
-  echo "Waiting for approval of code $DEV_USER_CODE (up to ${LOGIN_WAIT_SECONDS}s)…" >&2
+  if [[ -n "$once" ]]; then
+    deadline=0
+  else
+    echo "Waiting for approval of code $DEV_USER_CODE (up to ${LOGIN_WAIT_SECONDS}s)…" >&2
+  fi
   # the poll body carries the device code: a 0600 file, not an argv
   ( umask 077 && H0_DEVICE_CODE="$DEV_DEVICE_CODE" jq -n '{device_code: env.H0_DEVICE_CODE}' > "$DEVICE_BODY_FILE" )
   while :; do
@@ -535,6 +619,9 @@ device_wait() {
           echo "login_result.status=denied" >&2
           die "the sign-in was denied in the browser — run again to start a new one only if the user asks."
           ;;
+        api_key_limit_reached)
+          device_key_limit "$body"
+          ;;
         expired_token)
           device_clear
           device_start "The previous code expired — here is a new one."
@@ -562,18 +649,22 @@ case "$MODE" in
   login)
     # re-show a login that's still pending for this base url rather than
     # minting a second code the user might confuse with the first.
-    if device_load && ! device_expired; then
-      device_print
-      exit 3
+    if device_load; then
+      if ! device_expired; then
+        device_print
+        exit 3
+      fi
+      # past this side's expiry: the server says whether the login is over
+      # (a new code, exit 3), still waiting (re-shown, exit 3), approved and
+      # held up by the account's key limit (exit 1) or approved (key saved).
+      device_wait once
+      exit 0
     fi
     device_start
     ;;
   login-wait)
     device_load || die "no sign-in in progress — run publish.sh --login first"
-    if device_expired; then
-      device_clear
-      device_start "The previous code expired — here is a new one."
-    fi
+    # no expiry check here: the poll's answer decides (expired_token → a new code)
     device_wait
     exit 0
     ;;
@@ -583,10 +674,8 @@ case "$MODE" in
         die "no API key found (--no-login). Run publish.sh --login to sign in — the user approves a link + code in their browser, nothing personal is typed here — or pass --api-key / set HOST0_API_KEY."
       fi
       if device_load; then
-        if device_expired; then
-          device_clear
-          device_start "the previous code expired — here is a new one."
-        fi
+        # no expiry check here: the poll's answer decides (expired_token → a
+        # new code), since an approved login outlives the expiry saved locally
         device_wait
       else
         device_start
@@ -1009,11 +1098,13 @@ fi
 DEPLOY_RESP=$(api POST "/api/v1/apps/$APP_ID/deployments" "$BODY")
 check_api_error "$DEPLOY_RESP" "create deployment"
 
-DEPLOYMENT_ID=$(echo "$DEPLOY_RESP" | jq -r '.deployment_id')
+# from here on this run owns the deployment: if anything below fails before it
+# goes live, the cleanup trap cancels it (or deletes the app this run created).
+DEPLOYMENT_ID=$(echo "$DEPLOY_RESP" | jq -r '.deployment_id // empty')
+[[ -n "$DEPLOYMENT_ID" ]] || die "create deployment: unexpected response: $DEPLOY_RESP"
 FINALIZE_URL=$(echo "$DEPLOY_RESP" | jq -r '.upload.finalize_url')
 TARGET_COUNT=$(echo "$DEPLOY_RESP" | jq '.upload.targets | length')
 SKIPPED_COUNT=$(echo "$DEPLOY_RESP" | jq '.upload.skipped | length')
-[[ "$DEPLOYMENT_ID" != "null" && -n "$DEPLOYMENT_ID" ]] || die "create deployment: unexpected response: $DEPLOY_RESP"
 
 # scheme://host[:port] of a url — everything before the first path segment.
 url_origin() {
@@ -1095,8 +1186,10 @@ LIVE_VERSION=$(echo "$FIN_RESP" | jq -r '.version // empty' 2>/dev/null || true)
 PREVIOUS_VERSION=$(echo "$FIN_RESP" | jq -r '.previous_version // empty' 2>/dev/null || true)
 
 # the app is live — it is no longer a cleanup candidate. a failure in the
-# steps below (state file, visibility) must never delete a live app.
+# steps below (state file, visibility) must never delete a live app or try to
+# cancel its deployment.
 CREATED_APP_ID=""
+DEPLOY_LIVE=1
 
 # save state (internal cache — never source of truth) before the optional
 # visibility change: if that PATCH fails (e.g. public_app_limit_reached), the
