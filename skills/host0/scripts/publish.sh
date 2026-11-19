@@ -10,7 +10,7 @@ set -euo pipefail
 
 # bump on every change to this script: it rides in x-host0-client
 # (<agent>/<version>) so the first-deploy metrics can tell script versions apart.
-PUBLISH_SH_VERSION="2026.11.04"
+PUBLISH_SH_VERSION="2026.11.17"
 DEFAULT_BASE_URL="https://host0.ai"
 BASE_URL="$DEFAULT_BASE_URL"
 CREDENTIALS_FILE="$HOME/.host0/credentials"
@@ -602,7 +602,9 @@ esac
 if [[ "$MODE" == "pull" ]]; then
   STATE_DIR=""  # pull writes its own state file (below)
 elif [[ "$TARGET_KIND" == "dir" ]]; then
-  TARGET_ABS=$(cd "$TARGET" && pwd)
+  # -P: a symlinked folder resolves to the real one (find doesn't follow a
+  # symlink it is started on, so the publish used to find no files).
+  TARGET_ABS=$(cd "$TARGET" && pwd -P)
   STATE_DIR="$TARGET_ABS/.host0"
   STATE_SOURCE="."
   DEFAULT_NAME=$(basename "$TARGET_ABS")
@@ -621,6 +623,22 @@ STATE_FILE="$STATE_DIR/state.json"
 API_BODY=""
 API_HTTP_STATUS=""
 api_probe() {
+  api_probe_once "$@"
+  # the same single wait as api() below: this lookup starts every redeploy of
+  # a folder that was published before, and without it a rate-limited run
+  # died here ("app lookup … failed (HTTP 429)") instead of waiting.
+  if [[ "$API_HTTP_STATUS" == "429" ]]; then
+    local wait_s
+    wait_s=$(printf '%s' "$API_BODY" | jq -r 'select(type == "object" and .error == "rate_limited") | (.retry_after // 5)' 2>/dev/null || true)
+    if [[ "$wait_s" =~ ^[0-9]+$ ]] && [[ "$wait_s" -le 60 ]]; then
+      echo "host0: this account's request limit was reached — waiting ${wait_s}s, then trying once more" >&2
+      sleep "$((wait_s + 1))"
+      api_probe_once "$@"
+    fi
+  fi
+}
+
+api_probe_once() {
   local method="$1" path="$2" out rc
   set +e
   out=$(net_curl idem -s -X "$method" "$BASE_URL$path" \
@@ -638,22 +656,76 @@ api_probe() {
   API_BODY="${out%$'\n'*}"
 }
 
+# One more try when the account's request limit answers 429: the limit is per
+# account (all its keys together), so another agent publishing on the same
+# account can use it up. A 429 was refused before anything ran, so repeating
+# it is safe for a POST too.
+api() {
+  local resp rc=0 wait_s
+  resp=$(api_once "$@") || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    wait_s=$(printf '%s' "$resp" | jq -r 'select(type == "object" and .error == "rate_limited") | (.retry_after // 5)' 2>/dev/null || true)
+    if [[ "$wait_s" =~ ^[0-9]+$ ]] && [[ "$wait_s" -le 60 ]]; then
+      echo "host0: this account's request limit was reached — waiting ${wait_s}s, then trying once more" >&2
+      sleep "$((wait_s + 1))"
+      rc=0
+      resp=$(api_once "$@") || rc=$?
+    fi
+  fi
+  printf '%s' "$resp"
+  return "$rc"
+}
+
 # POST creates things (an app, a deployment), so it only retries failures that
 # provably never reached the server; everything else is safe to repeat.
-api() {
+api_once() {
   local method="$1" path="$2" body="${3:-}" mode="idem"
   [[ "$method" == "POST" ]] && mode="once"
   if [[ -n "$body" ]]; then
+    # from a file, not argv: Linux caps one argument at 128 KiB, and the
+    # manifest of a folder with ~650 files is larger ("Argument list too long").
+    local bodyf rc=0
+    bodyf=$(mktemp "$SECRET_DIR/body.XXXXXX")
+    printf '%s' "$body" > "$bodyf"
     net_curl "$mode" -sS -X "$method" "$BASE_URL$path" \
       -K "$AUTH_CFG" \
       -H "x-host0-client: $CLIENT_HEADER_VALUE" \
       -H "content-type: application/json" \
-      -d "$body"
+      --data-binary "@$bodyf" || rc=$?
+    rm -f "$bodyf"
+    return "$rc"
   else
     net_curl "$mode" -sS -X "$method" "$BASE_URL$path" \
       -K "$AUTH_CFG" \
       -H "x-host0-client: $CLIENT_HEADER_VALUE"
   fi
+}
+
+# the state file's content, or an empty state when it is missing, empty or
+# not a JSON object (cut short by a kill, hand-edited).
+read_state() {  # read_state <file> → JSON on stdout
+  local file="$1" state
+  if [[ -s "$file" ]]; then
+    if state=$(jq -c 'if type == "object" then . else error("not an object") end' "$file" 2>/dev/null); then
+      printf '%s' "$state"
+      return 0
+    fi
+    # said once: before the publish when it meant a new app (below), else here
+    [[ -n "${STATE_WARNED:-}" ]] || echo "warning: $file isn't valid JSON — starting it over" >&2
+  fi
+  printf '%s' '{"apps":{}}'
+}
+
+# write through a temp file and a rename, so a kill never leaves it half-written.
+write_state() {  # write_state <file> <json>
+  local file="$1" tmp="$1.tmp.$$"
+  # the braces: a redirect that can't open its file (a read-only folder)
+  # reports from the shell itself, before the command's own 2>/dev/null applies.
+  if { printf '%s' "$2" | jq '.' > "$tmp" && mv -f "$tmp" "$file"; } 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
 }
 
 compute_sha256() {
@@ -757,13 +829,14 @@ if [[ "$MODE" == "pull" ]]; then
   mkdir -p "$DEST_ABS/.host0"
   PULL_STATE_FILE="$DEST_ABS/.host0/state.json"
   [[ ! -L "$PULL_STATE_FILE" ]] || die "$PULL_STATE_FILE is a symlink — remove it, or pull into a new folder"
-  if [[ -f "$PULL_STATE_FILE" ]]; then STATE=$(cat "$PULL_STATE_FILE"); else STATE='{"apps":{}}'; fi
+  STATE=$(read_state "$PULL_STATE_FILE")
   entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
     --arg b "$BASE_URL" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{app_id: $a, slug: $s, url: $u, base_url: $b, source: ".", updated_at: $t}')
   STATE=$(echo "$STATE" | jq --arg k "$APP_SLUG" --arg a "$APP_ID" --argjson e "$entry" \
     '.apps = ((.apps // {}) | with_entries(select(.value.app_id != $a))) | .apps[$k] = $e')
-  echo "$STATE" | jq '.' > "$PULL_STATE_FILE"
+  write_state "$PULL_STATE_FILE" "$STATE" ||
+    echo "warning: could not write $PULL_STATE_FILE — publish this folder with --slug $APP_SLUG so it updates the same app" >&2
 
   # stdout: the folder, nothing else
   echo "$DEST_ABS"
@@ -897,6 +970,13 @@ else
     done <<< "$CANDIDATES"
   fi
   if [[ -z "$APP_ID" ]]; then
+    # a state file that can't be read (cut short, hand-edited, emptied) says
+    # nothing about which app this folder was published to: say so BEFORE the
+    # new app exists, not after it is live.
+    if [[ -e "$STATE_FILE" ]] && ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+      echo "warning: $STATE_FILE isn't valid JSON, so the app this was published to is unknown — creating a new app. If you meant to update an existing one, stop and re-run with --slug <slug>." >&2
+      STATE_WARNED=1
+    fi
     if [[ ${#STALE_SLUGS[@]} -gt 0 ]]; then
       echo "warning: no app cached in $STATE_FILE is usable with this API key — creating a new app. If you meant to update an existing one, stop and re-run with --slug <slug>." >&2
     fi
@@ -1021,25 +1101,34 @@ CREATED_APP_ID=""
 # save state (internal cache — never source of truth) before the optional
 # visibility change: if that PATCH fails (e.g. public_app_limit_reached), the
 # next run must still update this app rather than create a duplicate.
-mkdir -p "$STATE_DIR"
-if [[ -f "$STATE_FILE" ]]; then
-  STATE=$(cat "$STATE_FILE")
-else
-  STATE='{"apps":{}}'
+# never fatal: the app is already live, and a folder that can't be written (a
+# read-only mount) used to end the run here with no url — every retry then
+# created another live app.
+save_state() {
+  local state entry stale
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  state=$(read_state "$STATE_FILE") || return 1
+  for stale in ${STALE_SLUGS[@]+"${STALE_SLUGS[@]}"}; do
+    state=$(printf '%s' "$state" | jq --arg k "$stale" 'del(.apps[$k])') || return 1
+  done
+  # base_url + updated_at are what make resolution unambiguous on the next run.
+  entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
+    --arg b "$BASE_URL" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg src "$STATE_SOURCE" \
+    '{app_id: $a, slug: $s, url: $u, base_url: $b, source: $src, updated_at: $t}') || return 1
+  # entries are keyed by slug: an app renamed since the last run (dashboard,
+  # PATCH, or mcp rename_app) leaves its old key behind — drop every other
+  # entry for this app_id so the cache holds one entry per app.
+  state=$(printf '%s' "$state" | jq --arg k "$APP_SLUG" --arg a "$APP_ID" --argjson e "$entry" \
+    '.apps = ((.apps // {}) | with_entries(select(.value.app_id != $a))) | .apps[$k] = $e') || return 1
+  write_state "$STATE_FILE" "$state"
+}
+if ! save_state; then
+  # no warning when the file already points this folder at this app (a
+  # read-only checkout published before): the next run finds it anyway.
+  if ! jq -e --arg k "$APP_SLUG" --arg a "$APP_ID" '.apps[$k].app_id == $a' "$STATE_FILE" >/dev/null 2>&1; then
+    echo "warning: could not save $STATE_FILE — the app is live; to update it (not create another), publish with --slug $APP_SLUG next time" >&2
+  fi
 fi
-for stale in ${STALE_SLUGS[@]+"${STALE_SLUGS[@]}"}; do
-  STATE=$(echo "$STATE" | jq --arg k "$stale" 'del(.apps[$k])')
-done
-# base_url + updated_at are what make resolution unambiguous on the next run.
-entry=$(jq -n --arg a "$APP_ID" --arg s "$APP_SLUG" --arg u "$LIVE_URL" \
-  --arg b "$BASE_URL" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg src "$STATE_SOURCE" \
-  '{app_id: $a, slug: $s, url: $u, base_url: $b, source: $src, updated_at: $t}')
-# entries are keyed by slug: an app renamed since the last run (dashboard,
-# PATCH, or mcp rename_app) leaves its old key behind — drop every other
-# entry for this app_id so the cache holds one entry per app.
-STATE=$(echo "$STATE" | jq --arg k "$APP_SLUG" --arg a "$APP_ID" --argjson e "$entry" \
-  '.apps = ((.apps // {}) | with_entries(select(.value.app_id != $a))) | .apps[$k] = $e')
-echo "$STATE" | jq '.' > "$STATE_FILE"
 
 # optional: set visibility
 if [[ -n "$VISIBILITY" ]]; then

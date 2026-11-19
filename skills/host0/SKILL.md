@@ -52,7 +52,7 @@ Both read and write the same `~/.host0/credentials`, `~/.host0/device.json` and 
 | `--wait {seconds}` | `--timeout {seconds}` |
 | `publish.sh --pull --slug {slug} [dir]` | `host0 pull {slug} [dir]` |
 
-The CLI also manages apps, so you don't need raw curl for these: `host0 ls`, `inspect {app}`, `versions {app}`, `rollback {app} {n}`, `visibility {app} private|link|public`, `rename {app} [--slug s] [--name n]`, `share {app} {email…}` / `unshare {app} {email}`, `rm {app} --yes`, `analytics {app} [--period 7d]`, `records {app} [collection] [--export]`, `whoami`, `logout`, and `api {path} [-X METHOD] [-d json]` for anything else under `/api/v1`. `{app}` is a slug or an app id; `--json` prints the API's JSON body. The curl calls below are for the `publish.sh` path.
+The CLI also manages apps, so you don't need raw curl for these: `host0 ls`, `inspect {app}`, `versions {app}`, `rollback {app} {n}`, `visibility {app} private|link|public`, `rename {app} [--slug s] [--name n]`, `share {app} {email…}` / `unshare {app} {email}`, `rm {app} --yes`, `analytics {app} [--period 7d]`, `records {app} [collection] [--export]`, `domains {app}` (custom domains), `whoami`, `logout`, and `api {path} [-X METHOD] [-d json]` for anything else under `/api/v1`. `{app}` is a slug or an app id; `--json` prints the API's JSON body. The curl calls below are for the `publish.sh` path.
 
 ## Requirements
 
@@ -75,9 +75,9 @@ Add `--client {your-agent}` (e.g. `--client claude-ai`) when you're not Claude C
 
 With the CLI: `host0 deploy {dir|file} [--name "my app"]` — same flags, same output.
 
-Under the hood this is a three-step flow: manifest → upload files → finalize. The app is not live until finalize succeeds.
+Under the hood this is a three-step flow: manifest → upload files → finalize. The app is not live until finalize succeeds. Finalize is safe to repeat: if its answer got lost, send it again, and a deployment that already went live answers the same 200 with `already_live: true`. A `409 not_pending` means that deployment failed or was replaced: start a new publish.
 
-**File structure:** `index.html` must sit at the root of the directory you publish — the directory's contents become the site root. Publish `my-site/` where `my-site/index.html` exists, not a parent folder containing `my-site/`.
+**File structure:** `index.html` must sit at the root of the directory you publish — the directory's contents become the site root. Publish `my-site/` where `my-site/index.html` exists, not a parent folder containing `my-site/`. Don't put files under `.h0/`: host0 keeps `/.h0/*` on every app (sign-in, shared data, analytics), so the publish is refused (`bad_request`). Use another folder name.
 
 **Many pages:** every file keeps its path. `/about` serves `about.html` or `about/index.html` (a folder index gets its trailing slash: `/docs` → `/docs/`), and `/docs/guide` serves `docs/guide.html`, so links can use either form. A `404.html` at the root is served for missing pages. Without one, a missing page path serves `index.html`, so client-side routes in a single-page app deep-link.
 
@@ -231,7 +231,7 @@ This is how you build a small tool a team shares: a todo list, a ticket board, a
 - Field types: `string`, `number`, `boolean`, `json` (arbitrary object). Constraints: `required`, `default`, `maxLength`, `enum`.
 - The manifest is validated at deploy — a mistake fails the upload with the exact line to fix, before anything goes live. Read the message; it says what to change.
 - Adding a collection or an optional field is applied by the next publish. Removing a collection stops serving it but **keeps** its data (still exportable).
-- No `h0.json` → nothing changes: a plain site publishes exactly as before, and **an app that has collections keeps them**, so a redeploy of just the changed files is safe. To change the collections, publish an `h0.json` with all of them. To turn records off, publish `{"records": {}}` (the data is kept, still exportable). An `h0.json` must have a `records` key, and it's the only top-level key: anything else is refused with `invalid_manifest`.
+- No `h0.json` → nothing changes: a plain site publishes exactly as before, and **an app that has collections keeps them**, so a redeploy of just the changed files is safe. To change the collections, publish an `h0.json` with all of them. To turn records off, publish `{"records": {}}` (the data is kept, still exportable). An `h0.json` must have a `records` key, and it's the only top-level key: anything else is refused with `invalid_manifest`. Inside it, a collection takes only `fields` and `access`, and a field only `type`, `required`, `default`, `maxLength` and `enum`: any other key (a misspelt `access`, a `min` or `unique`) is refused too, so nothing you wrote is silently ignored.
 
 ### Shared or per-person? Ask first
 
@@ -374,6 +374,7 @@ setInterval(load, 4000);   // collaboration in v1 is polling
 - **Handle `401` on every call**, not just reads: the body carries `signin_url` and a `message` written for the visitor ("Sign in to add tickets.") — show that message as a link to `signin_url`.
 - **Show `message` on failure**: every error body has a human-readable `message`.
 - **PATCH only what changed** — that's what stops two people editing the same record from clobbering each other.
+- **Save when an edit is finished, not on every keystroke.** Writes by visitors the owner hasn't invited are limited per app, per hour: anonymous ones by network, signed-in ones by account (`GET {base}/api/v1` → `limits.records`). The owner and invited emails aren't limited. Over the limit a write answers `429 rate_limited` with `retry_after`: show its `message`.
 - **Read `created_by_email` off the envelope**, not out of `data`. It's `null` for readers who aren't the owner, an invited member or the record's author (anonymous visitors of a link app, signed-in strangers) — always render a fallback, or add a `name` field if strangers should see who wrote it.
 - Don't build a login screen or store passwords. Identity is `/.h0/me`, and access is the app's share list.
 
@@ -438,7 +439,7 @@ The user signs in on host0 in **their own browser** and approves a short code. Y
 3. In the **same turn**, run `./scripts/publish.sh --login-wait` (CLI: `host0 login --wait`) (or the same publish command again). It waits up to 90s (`--wait {seconds}`; CLI `--timeout {seconds}`) for the approval, saves the key to `~/.host0/credentials` (chmod 600) and, for a publish, carries on to the live URL.
 4. Exit code 3 again means the user hasn't approved yet — run the same command again; **don't start a new login** (that would replace the code they're looking at). An expired code is replaced automatically, with a new link to show.
 5. `login_result.status=denied` (exit 1) — the user said no. Ask before starting another one.
-6. A publish that fails with `host0: the api key from … was rejected` (revoked, or saved from another account): a publish only starts a login when there's no key at all, so run `./scripts/publish.sh --login` yourself and continue from step 2 — the approved key replaces the saved one.
+6. A publish that fails with `host0: the API key from … was rejected` (revoked, or saved from another account): a publish only starts a login when there's no key at all, so run `./scripts/publish.sh --login` yourself and continue from step 2 — the approved key replaces the saved one.
 
 The raw REST pair, if you can run neither tool:
 
@@ -552,7 +553,7 @@ Never retry the same publish in a loop — it fails the same way until something
 
 ## When the account has no plan
 
-A new account may have no plan yet. Then creating or deploying an app answers 402 `plan_required` (`publish_result.error=plan_required` from the script, with `publish_result.upgrade_url`; the CLI shows the same link). There's no free fix: tell the user their host0 account needs a plan before it can publish, that every plan starts with a 7-day free trial (the error's `message` has the current terms), and give them `upgrade_url` to open in their own browser to start it. When they say it's started, run the same publish again — once, not in a loop. Never start the trial or enter payment details for them.
+A new account may have no plan yet. Then creating or deploying an app answers 402 `plan_required` (`publish_result.error=plan_required` from the script, with `publish_result.upgrade_url`; the CLI shows the same link). There's no free fix: tell the user their host0 account needs a plan before it can publish, what the error's `message` says about the free trial (a first plan starts with one; `trial_days` is its length, 0 when the account already had its trial), and give them `upgrade_url` to open in their own browser to start it. When they say it's started, run the same publish again — once, not in a loop. Never start the trial or enter payment details for them.
 
 ## Important — never do these
 
@@ -596,4 +597,4 @@ Everything else — listing apps, app detail, shares, deployment status, version
 
 ## The host0 MCP server manages, it doesn't deploy
 
-This skill is how agents deploy to host0 — the MCP server has no deploy or create tool. (People can also publish by dropping files on their host0 dashboard in the browser, and upload a new version of an existing app by dropping files on its Versions tab.) If the user also has host0 connected as an MCP server (`{base}/mcp`), its tools manage apps that already exist: `list_apps`, `get_app`, `get_deploy_status`, `get_analytics`, `list_versions`, `restore_version`, `list_records`, `update_record`, `delete_record`, `set_visibility`, `rename_app`, `share`, `unshare`, and `delete_app` (deletes an app completely, live or not). Use whichever is at hand for those — they call the same service as the REST endpoints above. To put new files live, always use this skill — `host0 deploy` or `publish.sh`.
+This skill is how agents deploy to host0 — the MCP server has no deploy or create tool. (People can also publish by dropping files on their host0 dashboard in the browser, and upload a new version of an existing app by dropping files on its Versions tab.) If the user also has host0 connected as an MCP server (`{base}/mcp`), its tools manage apps that already exist: `list_apps`, `get_app`, `get_deploy_status`, `get_analytics`, `list_versions`, `restore_version`, `list_records`, `update_record`, `delete_record`, `set_visibility`, `rename_app`, `share`, `unshare`, `get_account`, the custom-domain tools (`list_domains`, `add_domain`, `verify_domain`, `remove_domain`), and `delete_app` (deletes an app completely, live or not). Use whichever is at hand for those — they call the same service as the REST endpoints above. To put new files live, always use this skill — `host0 deploy` or `publish.sh`.
