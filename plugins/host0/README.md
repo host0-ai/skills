@@ -1,15 +1,15 @@
-# host0 for Claude Code
+# host0 for Claude
 
 **host0 hosts whatever your agent creates** — HTML pages, sites, apps with a shared database, Markdown, PDFs — at a link you can share.
 
 This plugin brings two things:
 
-- **The host0 skill.** It teaches Claude Code to publish a file or folder to a live `https://<slug>.host0.app` URL with the host0 CLI, to build small team tools on host0's shared records (declared in an `h0.json`, no server code), and to manage what's live.
+- **The host0 skill.** It teaches Claude to publish a file or folder to a live `https://<slug>.host0.app` URL with the host0 CLI, to build small team tools on host0's shared records (declared in an `h0.json`, no server code), and to manage what's live.
 - **The host0 MCP server** (`https://mcp.host0.ai/mcp`, remote, OAuth sign-in). It manages apps you've already published: visibility, sharing by email, versions and restore, analytics, shared data and custom domains. It doesn't deploy.
 
 ## Setup
 
-In Claude Code:
+In Claude Code (or add it from the plugin directory in Claude and Cowork):
 
 ```
 /plugin install host0 --marketplace host0-ai/skills

@@ -27,7 +27,7 @@ Full docs live at **https://host0.ai/docs** — read them when the user asks how
 - **The host0 CLI (`host0`)** publishes files and does everything else from the terminal. Check it's there with `host0 --version`.
 - **The host0 MCP server** comes with this plugin. Its tools manage apps that already exist: `list_apps`, `get_app`, `get_deploy_status`, `get_analytics`, `list_versions`, `restore_version`, `list_records`, `update_record`, `delete_record`, `set_visibility`, `rename_app`, `share`, `unshare`, `get_account`, `list_domains`, `add_domain`, `verify_domain`, `remove_domain` and `delete_app`. It has no deploy or create tool. On first use it asks the user to sign in to host0 in their browser.
 
-**If `host0 --version` fails, the CLI isn't installed.** Tell the user that publishing needs the host0 CLI (Node 18.18 or newer) and point them to the install instructions at https://host0.ai/docs#cli. Don't install it yourself. Once they say it's installed, carry on. Until then you can still manage existing apps with the MCP tools.
+**If `host0 --version` fails, the CLI isn't installed.** Tell the user that publishing needs the host0 CLI (Node 18.18 or newer) and point them to the install instructions at https://host0.ai/docs#cli. Don't install it on your own initiative; if the user tells you to set it up, follow those instructions. Once it's there, carry on. Until then you can still manage existing apps with the MCP tools.
 
 ## Requirements
 
