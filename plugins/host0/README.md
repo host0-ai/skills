@@ -28,7 +28,7 @@ Ask Claude:
 
 Apps are private by default: only you and people you invite can open them. Open one to anyone with the link, or make it public on the web, when you want to.
 
-Docs: [host0.ai/docs](https://host0.ai/docs). Plans: [host0.ai/pricing](https://host0.ai/pricing). Privacy: [host0.ai/legal/privacy](https://host0.ai/legal/privacy). Support: [support@host0.ai](mailto:support@host0.ai).
+Docs: [host0.ai/docs](https://host0.ai/docs). Plans: [host0.ai/pricing](https://host0.ai/pricing). Privacy: [host0.ai/legal/privacy](https://host0.ai/legal/privacy). Support: [host0.ai/support](https://host0.ai/support).
 
 ## License
 
