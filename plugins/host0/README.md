@@ -28,6 +28,15 @@ Ask Claude:
 
 Apps are private by default: only you and people you invite can open them. Open one to anyone with the link, or make it public on the web, when you want to.
 
+## What it sends where
+
+Everything goes to host0 and nowhere else:
+
+- **The skill** runs the host0 CLI, which sends the files you choose to publish (and the `h0.json` that declares shared data) to the host0 API at `host0.ai` and uploads them to `host0.app`. It also sends the email addresses you ask Claude to invite to an app.
+- **The MCP server** at `mcp.host0.ai` reads and changes your apps on host0: their settings, share lists (email addresses), versions, analytics and shared records, which can hold whatever your app's visitors entered.
+
+host0 keeps published apps, their shared records and your account until you delete them, and visit analytics for 13 months. Details: [privacy policy](https://host0.ai/legal/privacy).
+
 Docs: [host0.ai/docs](https://host0.ai/docs). Plans: [host0.ai/pricing](https://host0.ai/pricing). Privacy: [host0.ai/legal/privacy](https://host0.ai/legal/privacy). Support: [host0.ai/support](https://host0.ai/support).
 
 ## License
